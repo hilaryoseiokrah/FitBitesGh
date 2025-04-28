@@ -7,8 +7,7 @@ Original file is located at
     https://colab.research.google.com/drive/1oSpQrI7_QcZLBd1ttPsi6MkCSXCT6k5x
 """
 
-# --- FINAL UPDATED app.py for FitBites Ghanaian Meal Generator ---
-
+# --- Imports ---
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -17,16 +16,11 @@ import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
-import json
-from openai import OpenAI
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="FitBites | Personalized Meal Plan", layout="wide")
+# --- Page Setup ---
+st.set_page_config(page_title="FitBites - Personalized Meal Plans 🍽️", layout="wide")
 
-# --- SETTINGS ---
-openai_api_key = "YOUR_OPENAI_API_KEY_HERE"   # Insert your actual OpenAI API key
-
-# --- LOAD DATA ---
+# --- Load Data ---
 @st.cache_data
 def load_data():
     df = pd.read_csv('gh_food_nutritional_values.csv')
@@ -37,7 +31,7 @@ def load_data():
 
 df, nutritional_columns = load_data()
 
-# --- NEURAL NETWORK ---
+# --- Neural Net Model ---
 class FoodAutoencoder(nn.Module):
     def __init__(self, input_dim, embedding_dim=16):
         super(FoodAutoencoder, self).__init__()
@@ -51,7 +45,6 @@ class FoodAutoencoder(nn.Module):
             nn.ReLU(),
             nn.Linear(32, input_dim)
         )
-
     def forward(self, x):
         encoded = self.encoder(x)
         decoded = self.decoder(encoded)
@@ -77,7 +70,7 @@ scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df[nutritional_columns])
 food_embeddings = train_model(X_scaled)
 
-# --- RECOMMEND FOODS FUNCTION ---
+# --- Helper Functions ---
 def recommend_food_nn(food_name, dataset, embeddings, top_n=5):
     dataset['Food'] = dataset['Food'].str.lower()
     food_name = food_name.lower()
@@ -87,7 +80,6 @@ def recommend_food_nn(food_name, dataset, embeddings, top_n=5):
     recommended_idx = sims.argsort()[::-1][1:top_n+1]
     return dataset.iloc[recommended_idx]['Food'].tolist()
 
-# --- BMI, TDEE CALCULATION ---
 def calculate_bmi(weight, height_cm):
     return weight / (height_cm/100)**2
 
@@ -99,43 +91,32 @@ def calculate_tdee(weight, height, age, sex, activity_level):
     multipliers = {'sedentary':1.2, 'light':1.375, 'moderate':1.55, 'active':1.725, 'superactive':1.9}
     return bmr * multipliers[activity_level]
 
-# --- OPENAI-POWERED MEAL GENERATION ---
-def call_openai_for_mealplan(initial_plan, target_calories, bmi, weeks_to_goal):
-    food_table = df[['Food', 'Calories(100g)', 'Protein(g)', 'Fat(g)', 'Carbs(g)', 'Category']].to_dict(orient='records')
+def generate_meal_plan(preferences, daily_calories):
+    plan = []
+    meal_split = {'breakfast':0.25, 'lunch':0.35, 'dinner':0.4}
+    for day in range(1,8):
+        day_plan = {'Day': f"Day {day}"}
+        total_portion = 0
+        for meal, portion in meal_split.items():
+            starter_foods = preferences.get(meal, [])
+            meal_foods = []
+            for food in starter_foods:
+                meal_foods += recommend_food_nn(food, df, food_embeddings, top_n=5)
+            meal_foods = list(set(meal_foods))
+            if not meal_foods:
+                meal_foods = df['Food'].sample(2).tolist()
 
-    system_msg = (
-        "You are a professional Ghanaian dietitian. Build 7-day realistic Ghanaian meal plans with portions in ladles, scoops, cups, handfuls. "
-        "Daily calories MUST stay within user target. Meals must balance carbs, protein, and fat."
-    )
+            selected = np.random.choice(meal_foods, 1)[0]
+            cal = df[df['Food'] == selected]['Calories(100g)'].values[0]
+            quantity = (daily_calories * portion) / cal * 100
+            day_plan[meal.title()] = f"{selected} ({quantity:.0f}g)"
+            total_portion += quantity
+        day_plan['Total Portion (g)'] = f"{total_portion:.0f}g"
+        plan.append(day_plan)
+    return pd.DataFrame(plan)
 
-    user_msg = {
-        "context": {
-            "daily_target_calories": target_calories,
-            "bmi": bmi,
-            "weeks_to_goal": weeks_to_goal
-        },
-        "model_recommendations": initial_plan,
-        "full_food_table": food_table
-    }
-
-    client = OpenAI(api_key=openai_api_key)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        messages=[
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": json.dumps(user_msg)}
-        ]
-    )
-
-    content = response.choices[0].message.content.strip()
-    start_idx = content.find('{')
-    content = content[start_idx:] if start_idx != -1 else content
-    plan_json = json.loads(content)
-    return plan_json
-
-# --- STREAMLIT SIDEBAR ---
-st.sidebar.header("💪 User Information")
+# --- Sidebar User Inputs ---
+st.sidebar.header("📋 Your Details")
 weight = st.sidebar.number_input("Current Weight (kg)", 30, 200, 90)
 target_weight = st.sidebar.number_input("Target Weight (kg)", 30, 200, 75)
 height = st.sidebar.number_input("Height (cm)", 120, 250, 160)
@@ -143,60 +124,40 @@ age = st.sidebar.number_input("Age", 10, 100, 25)
 sex = st.sidebar.selectbox("Sex", ['female', 'male'])
 activity_level = st.sidebar.selectbox("Activity Level", ['sedentary', 'light', 'moderate', 'active', 'superactive'])
 
-st.sidebar.subheader("🍽️ Choose Foods You Like")
-breakfast = st.sidebar.multiselect("Breakfast", df['Food'].unique())
-lunch = st.sidebar.multiselect("Lunch", df['Food'].unique())
-dinner = st.sidebar.multiselect("Dinner", df['Food'].unique())
+st.sidebar.subheader("🍽️ Foods You Like")
+breakfast = st.sidebar.multiselect("Breakfast Options", df['Food'].unique())
+lunch = st.sidebar.multiselect("Lunch Options", df['Food'].unique())
+dinner = st.sidebar.multiselect("Dinner Options", df['Food'].unique())
 
-# --- MAIN BODY ---
-st.title("🍛 Welcome to FitBites | Personalized Meal Plans for Your Journey")
-st.write("👋 Please input your details and food preferences to get started!")
+# --- Main ---
+st.title("🥗 Welcome to FitBites!")
+st.markdown("""
+    **Your Personalized Ghanaian Meal Plan Assistant** 🇬🇭 🍛
+    Ready to help you hit your weight goal in a sustainable, healthy, and delicious way!
+    Please fill out your details and food preferences on the left, then click **Generate Meal Plan**.
+""")
 
-if st.sidebar.button("✨ Generate Meal Plan") or "openai_plan" not in st.session_state:
+# --- Only show plan after clicking button ---
+if st.sidebar.button("✨ Generate Meal Plan"):
     bmi = calculate_bmi(weight, height)
     tdee = calculate_tdee(weight, height, age, sex, activity_level)
-    calorie_deficit = 500
-    target_calories = tdee - calorie_deficit
-    weeks_to_goal = int(np.round((weight - target_weight) / 0.5))
+    months = int(np.round(abs(weight - target_weight) / 2))
+    daily_calories = tdee - 500
 
-    st.session_state.user_context = {
-        "weight": weight, "target_weight": target_weight, "height": height,
-        "bmi": bmi, "tdee": tdee, "target_calories": target_calories, "weeks": weeks_to_goal
-    }
+    st.success(f"🎯 Target Weight: {target_weight} kg")
+    st.info(f"Estimated time to achieve goal: **{months} months**")
+    st.info(f"🔥 Daily Calorie Target: **{daily_calories:.0f} kcal/day**")
 
-    # Build initial starter foods
     preferences = {
         'breakfast': breakfast,
         'lunch': lunch,
         'dinner': dinner
     }
-    initial_plan = []
-    for meal_type, foods in preferences.items():
-        for food in foods:
-            initial_plan += recommend_food_nn(food, df, food_embeddings, top_n=5)
+    meal_plan = generate_meal_plan(preferences, daily_calories)
 
-    # CALL OpenAI API
-    openai_plan = call_openai_for_mealplan(initial_plan, target_calories, bmi, weeks_to_goal)
-    st.session_state.openai_plan = openai_plan
+    # --- Display the plan ---
+    st.subheader("📅 Your 7-Day Meal Plan")
+    st.dataframe(meal_plan, use_container_width=True)
 
-# --- DISPLAY PLAN ---
-if "openai_plan" in st.session_state:
-    st.subheader("📋 Your Personalized Meal Plan")
-    plan_df = pd.DataFrame.from_dict(st.session_state.openai_plan, orient='index')
-    st.dataframe(plan_df, use_container_width=True)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🔄 Reshuffle Plan"):
-            del st.session_state.openai_plan
-            st.rerun()
-
-    with col2:
-        if st.button("⏩ Next Week Plan"):
-            del st.session_state.openai_plan
-            st.rerun()
-
-    # Motivational Quote
-    st.success("✨ \"Consistency is harder when no one is clapping for you. Stay consistent.\" ✨")
-
-# --- END OF APP ---
+else:
+    st.warning("👉 Please complete your details and click **Generate Meal Plan** to begin!")
