@@ -7,9 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1oSpQrI7_QcZLBd1ttPsi6MkCSXCT6k5x
 """
 
-# 1. Install Streamlit and pyngrok
-!pip install streamlit pyngrok --quiet
-
 # 2. Write your Streamlit app code into 'app.py'
 streamlit_app = '''
 import streamlit as st
@@ -191,8 +188,6 @@ if "plan" in st.session_state:
 # Save it into 'app.py'
 with open('app.py','w') as f:
     f.write(streamlit_app)
-
-!ngrok config add-authtoken
 
 # 3. Launch Streamlit + create tunnel
 from pyngrok import ngrok
