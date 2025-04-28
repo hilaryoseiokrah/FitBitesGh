@@ -7,8 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1oSpQrI7_QcZLBd1ttPsi6MkCSXCT6k5x
 """
 
-# 2. Write your Streamlit app code into 'app.py'
-streamlit_app = '''
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -18,13 +16,13 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
 
-# Set up Streamlit page
-st.set_page_config(page_title="Meal Plan Generator 🍛", layout="wide")
+# --- Page config ---
+st.set_page_config(page_title="Personalized Meal Plan Generator 🍽️", layout="wide")
 
-# --- Load data ---
+# --- Load Dataset ---
 @st.cache_data
 def load_data():
-    df = pd.read_csv('/content/gh_food_nutritional_values.csv')
+    df = pd.read_csv('gh_food_nutritional_values.csv')  # Ensure this file is uploaded
     df['Food'] = df['Food'].str.strip().str.lower()
     cols = ['Protein(g)', 'Fat(g)', 'Carbs(g)', 'Calories(100g)', 'Water(g)', 'SFA(100g)', 'MUFA(100g)', 'PUFA(100g)']
     df[cols] = df[cols].fillna(df[cols].mean())
@@ -32,7 +30,7 @@ def load_data():
 
 df, nutritional_columns = load_data()
 
-# --- Model ---
+# --- Neural Net Model ---
 class FoodAutoencoder(nn.Module):
     def __init__(self, input_dim, embedding_dim=16):
         super(FoodAutoencoder, self).__init__()
@@ -46,6 +44,7 @@ class FoodAutoencoder(nn.Module):
             nn.ReLU(),
             nn.Linear(32, input_dim)
         )
+
     def forward(self, x):
         encoded = self.encoder(x)
         decoded = self.decoder(encoded)
@@ -67,12 +66,11 @@ def train_model(X):
         food_embeddings = model.encoder(X_tensor).numpy()
     return food_embeddings
 
-# Normalize
 scaler = StandardScaler()
-X = scaler.fit_transform(df[nutritional_columns])
-food_embeddings = train_model(X)
+X_scaled = scaler.fit_transform(df[nutritional_columns])
+food_embeddings = train_model(X_scaled)
 
-# --- Functions ---
+# --- Helper Functions ---
 def recommend_food_nn(food_name, dataset, embeddings, top_n=5):
     dataset['Food'] = dataset['Food'].str.lower()
     food_name = food_name.lower()
@@ -93,7 +91,6 @@ def calculate_tdee(weight, height, age, sex, activity_level):
     multipliers = {'sedentary':1.2, 'light':1.375, 'moderate':1.55, 'active':1.725, 'superactive':1.9}
     return bmr * multipliers[activity_level]
 
-# --- Meal Plan Logic ---
 def generate_meal_plan(preferences, daily_calories):
     plan = []
     meal_split = {'breakfast':0.25, 'lunch':0.35, 'dinner':0.4}
@@ -112,16 +109,14 @@ def generate_meal_plan(preferences, daily_calories):
             selected = np.random.choice(meal_foods, 1)[0]
             cal = df[df['Food'] == selected]['Calories(100g)'].values[0]
             quantity = (daily_calories * portion) / cal * 100
-            day_plan[meal.capitalize()] = f"{selected} ({quantity:.0f}g)"
+            day_plan[meal.title()] = f"{selected} ({quantity:.0f}g)"
             total_portion += quantity
-        day_plan['Total Portion (g)'] = f"{total_portion:.0f}g"
+        day_plan['Weekly Total Portion (g)'] = f"{total_portion:.0f}g"
         plan.append(day_plan)
     return pd.DataFrame(plan)
 
-# --- Sidebar ---
-st.sidebar.image('https://i.imgur.com/9JYvZq7.png', width=200)
-st.sidebar.header("🎯 Your Details")
-
+# --- Sidebar Inputs ---
+st.sidebar.header("User Info")
 weight = st.sidebar.number_input("Current Weight (kg)", 30, 200, 90)
 target_weight = st.sidebar.number_input("Target Weight (kg)", 30, 200, 75)
 height = st.sidebar.number_input("Height (cm)", 120, 250, 160)
@@ -129,50 +124,49 @@ age = st.sidebar.number_input("Age", 10, 100, 25)
 sex = st.sidebar.selectbox("Sex", ['female', 'male'])
 activity_level = st.sidebar.selectbox("Activity Level", ['sedentary', 'light', 'moderate', 'active', 'superactive'])
 
-st.sidebar.subheader("🍽️ Select Foods You Like")
+st.sidebar.subheader("Select Foods You Like")
 breakfast = st.sidebar.multiselect("Breakfast Options", df['Food'].unique())
 lunch = st.sidebar.multiselect("Lunch Options", df['Food'].unique())
 dinner = st.sidebar.multiselect("Dinner Options", df['Food'].unique())
 
 # --- Main Section ---
-if st.sidebar.button("✨ Generate Meal Plan") or "plan" not in st.session_state:
+if st.sidebar.button("Generate Meal Plan") or "plan" not in st.session_state:
     bmi = calculate_bmi(weight, height)
     tdee = calculate_tdee(weight, height, age, sex, activity_level)
-    st.session_state.target_calories = tdee - 500
     months = int(np.round((weight - target_weight) / 2))
+    daily_calories = tdee - 500
 
-    st.success(f"🎯 Target: {target_weight} kg • Estimated time: {months} months")
-    st.info(f"🔥 Daily Calorie Target: {st.session_state.target_calories:.0f} kcal/day")
+    st.session_state.target_calories = daily_calories
+
+    st.success(f"Target Weight: {target_weight}kg")
+    st.info(f"Estimated time to achieve goal: {months} months")
+    st.info(f"Daily Calorie Target: {daily_calories:.0f} kcal/day")
 
     preferences = {
         'breakfast': breakfast,
         'lunch': lunch,
         'dinner': dinner
     }
-    st.session_state.plan = generate_meal_plan(preferences, st.session_state.target_calories)
+    st.session_state.plan = generate_meal_plan(preferences, daily_calories)
 
-
-# --- Display Plan ---
+# --- Display Meal Plan ---
 if "plan" in st.session_state:
-    st.subheader("🥗 7-Day Meal Plan")
+    st.subheader("7-Day Meal Plan")
     st.dataframe(st.session_state.plan, use_container_width=True)
 
     col1, col2 = st.columns(2)
-
     with col1:
-        if st.button("🔄 Reshuffle Plan"):
+        if st.button("Reshuffle Plan"):
             preferences = {
                 'breakfast': breakfast,
                 'lunch': lunch,
                 'dinner': dinner
             }
             st.session_state.plan = generate_meal_plan(preferences, st.session_state.target_calories)
-
             st.rerun()
-
 
     with col2:
-        if st.button("⏩ Next Week's Plan"):
+        if st.button("Next Week's Plan"):
             preferences = {
                 'breakfast': breakfast,
                 'lunch': lunch,
@@ -181,17 +175,4 @@ if "plan" in st.session_state:
             st.session_state.plan = generate_meal_plan(preferences, st.session_state.target_calories)
             st.rerun()
 
-
-
-'''
-
-# Save it into 'app.py'
-with open('app.py','w') as f:
-    f.write(streamlit_app)
-
-# 3. Launch Streamlit + create tunnel
-from pyngrok import ngrok
-!pkill streamlit
-public_url = ngrok.connect(addr="8501", proto="http")
-print(public_url)
-!streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false
+# End of app.py
