@@ -89,14 +89,16 @@ if not st.session_state.logged_in:
                 st.error("❌ Invalid credentials")
 
     # ----- Register tab -----
+    # ----- Register tab -----
     with reg_tab:
-        nu = st.text_input("Choose Username")
-        npw = st.text_input("Choose Password", type="password")
-        if st.button("Register"):
+        nu  = st.text_input("Choose Username", key="reg_user")
+        npw = st.text_input("Choose Password", type="password", key="reg_pass")
+        if st.button("Register", key="reg_btn"):
             if save_user(nu, npw):
                 st.success("✅ Registered! Switch to Login tab.")
             else:
                 st.warning("Username already exists")
+
 
     st.stop()  # prevent rest of app until logged in
 
