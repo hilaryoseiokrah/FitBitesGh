@@ -2,11 +2,82 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
+
+# --- Auth: User Management ---
+USER_FILE = "users.csv"
+
+def load_users():
+    if os.path.exists(USER_FILE):
+        return pd.read_csv(USER_FILE)
+    else:
+        return pd.DataFrame(columns=["username", "password"])
+
+def save_user(username, password):
+    users = load_users()
+    if username in users["username"].values:
+        return False
+    new_user = pd.DataFrame([[username, password]], columns=["username", "password"])
+    users = pd.concat([users, new_user], ignore_index=True)
+    users.to_csv(USER_FILE, index=False)
+    return True
+
+def check_credentials(username, password):
+    users = load_users()
+    match = users[(users["username"] == username) & (users["password"] == password)]
+    return not match.empty
+
+# --- Streamlit Login ---
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+if "reshuffle_mode" not in st.session_state:
+    st.session_state.reshuffle_mode = False
+if "meal_plan" not in st.session_state:
+    st.session_state.meal_plan = None
+
+if not st.session_state.logged_in:
+    st.title("🔐 Login to FitBites")
+
+    tab1, tab2 = st.tabs(["Login", "Register"])
+
+    with tab1:
+        login_user = st.text_input("Username")
+        login_pass = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if check_credentials(login_user, login_pass):
+                st.session_state.logged_in = True
+                st.session_state.username = login_user
+                st.success("✅ Logged in successfully!")
+                st.experimental_rerun()
+            else:
+                st.error("Invalid username or password.")
+
+    with tab2:
+        new_user = st.text_input("Create Username")
+        new_pass = st.text_input("Create Password", type="password")
+        if st.button("Register"):
+            if save_user(new_user, new_pass):
+                st.success("🎉 Registered! You can now log in.")
+            else:
+                st.warning("Username already exists.")
+
+    st.stop()
+
+# --- Log Out ---
+with st.sidebar:
+    if st.button("🚪 Log Out"):
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.session_state.reshuffle_mode = False
+        st.session_state.meal_plan = None
+        st.experimental_rerun()
 
 # --- Page Setup ---
 st.set_page_config(page_title="FitBites - Personalized Meal Plans 🍽️", layout="wide")
@@ -22,7 +93,7 @@ def load_data():
 
 df, nutritional_columns = load_data()
 
-# --- Neural Net Model ---
+# --- Neural Net ---
 class FoodAutoencoder(nn.Module):
     def __init__(self, input_dim, embedding_dim=16):
         super(FoodAutoencoder, self).__init__()
@@ -112,8 +183,9 @@ def generate_meal_plan(preferences, daily_calories, dislikes=[]):
         plan.append(day_plan)
     return pd.DataFrame(plan)
 
-# --- Sidebar Inputs ---
-st.sidebar.header("📋 Your Details")
+# --- Inputs ---
+st.title("🥗 FitBites Meal Planner")
+st.sidebar.header("📋 Your Info")
 weight = st.sidebar.number_input("Current Weight (kg)", 30, 200, 90)
 target_weight = st.sidebar.number_input("Target Weight (kg)", 30, 200, 75)
 height = st.sidebar.number_input("Height (cm)", 120, 250, 160)
@@ -122,91 +194,65 @@ sex = st.sidebar.selectbox("Sex", ['female', 'male'])
 activity_level = st.sidebar.selectbox("Activity Level", ['sedentary', 'light', 'moderate', 'active', 'superactive'])
 
 st.sidebar.subheader("🍽️ Foods You Like")
-breakfast = st.sidebar.multiselect("Breakfast Options", df['Food'].unique())
-lunch = st.sidebar.multiselect("Lunch Options", df['Food'].unique())
-dinner = st.sidebar.multiselect("Dinner Options", df['Food'].unique())
+breakfast = st.sidebar.multiselect("Breakfast", df['Food'].unique())
+lunch = st.sidebar.multiselect("Lunch", df['Food'].unique())
+dinner = st.sidebar.multiselect("Dinner", df['Food'].unique())
 
 st.sidebar.subheader("🚫 Foods You Dislike")
-dislikes = st.sidebar.multiselect("Select Foods You Don't Want in Your Plan", df['Food'].unique())
+dislikes = st.sidebar.multiselect("Avoid These", df['Food'].unique())
 
-# --- Main UI ---
-st.title("🥗 Welcome to FitBites!")
-st.markdown("""
-**Your Personalized Ghanaian Meal Plan Assistant** 🇬🇭 🍛  
-Ready to help you hit your weight goal in a sustainable, healthy, and delicious way!  
-Please fill out your details and food preferences on the left, then click **Generate Meal Plan**.
-""")
-
+# --- Generate Initial Plan ---
 if st.sidebar.button("✨ Generate Meal Plan"):
-    bmi = calculate_bmi(weight, height)
     tdee = calculate_tdee(weight, height, age, sex, activity_level)
-    months = int(np.round(abs(weight - target_weight) / 2))
     daily_calories = tdee - 500
+    preferences = {'breakfast': breakfast, 'lunch': lunch, 'dinner': dinner}
+    plan = generate_meal_plan(preferences, daily_calories, dislikes)
+    st.session_state.meal_plan = plan
+    filename = f"mealplans_{st.session_state.username}.csv"
+    plan.to_csv(filename, index=False)
+    st.success("Meal plan generated and saved!")
 
-    st.success(f"🎯 Target Weight: {target_weight} kg")
-    st.info(f"Estimated time to achieve goal: **{months} months**")
-    st.info(f"🔥 Daily Calorie Target: **{daily_calories:.0f} kcal/day**")
-
-    preferences = {
-        'breakfast': breakfast,
-        'lunch': lunch,
-        'dinner': dinner
-    }
-
-    meal_plan = generate_meal_plan(preferences, daily_calories, dislikes=dislikes)
-
+# --- Display Meal Plan ---
+if st.session_state.meal_plan is not None:
     st.subheader("📅 Your 7-Day Meal Plan")
-    st.dataframe(meal_plan, use_container_width=True)
+    st.dataframe(st.session_state.meal_plan, use_container_width=True)
 
-    # --- Reshuffle Section ---
-    st.markdown("### 🔄 Not feeling this plan?")
-    reshuffle_option = st.radio(
-        "Would you like to reshuffle the entire plan or just parts of it?",
-        ["Select parts to reshuffle", "Reshuffle entire plan"]
-    )
+# --- Reshuffle Trigger ---
+if st.button("🔄 Reshuffle Plan"):
+    st.session_state.reshuffle_mode = True
+
+if st.session_state.reshuffle_mode and st.session_state.meal_plan is not None:
+    st.markdown("### 🔄 Reshuffle Options")
+    reshuffle_option = st.radio("Choose Reshuffle Type:", ["Select parts to reshuffle", "Reshuffle entire plan"])
 
     if reshuffle_option == "Select parts to reshuffle":
-        days_to_reshuffle = st.multiselect(
-            "Which day(s) would you like to reshuffle?",
-            options=meal_plan["Day"].tolist(),
-            default=meal_plan["Day"].tolist()
-        )
-
-        meals_to_reshuffle = st.multiselect(
-            "Which meal(s)?",
-            options=["Breakfast", "Lunch", "Dinner"],
-            default=["Breakfast", "Lunch", "Dinner"]
-        )
-
-        new_dislikes = st.multiselect(
-            "Any additional foods to exclude this time?",
-            options=df['Food'].unique()
-        )
+        days = st.multiselect("Select day(s) to reshuffle", st.session_state.meal_plan["Day"].tolist())
+        meals = st.multiselect("Which meals to reshuffle?", ["Breakfast", "Lunch", "Dinner"])
+        more_dislikes = st.multiselect("Additional foods to avoid", df['Food'].unique())
 
         if st.button("✨ Confirm Partial Reshuffle"):
-            updated_dislikes = list(set(dislikes + new_dislikes))
-            partial_prefs = {m.lower(): preferences[m.lower()] for m in meals_to_reshuffle}
-            reshuffled = generate_meal_plan(partial_prefs, daily_calories, dislikes=updated_dislikes)
-            reshuffled = reshuffled[reshuffled["Day"].isin(days_to_reshuffle)]
-            meal_plan_updated = meal_plan.copy()
-            for _, row in reshuffled.iterrows():
-                day_idx = meal_plan_updated[meal_plan_updated["Day"] == row["Day"]].index[0]
-                for col in ["Breakfast", "Lunch", "Dinner", "Total Portion (g)"]:
-                    if col.lower() in [m.lower() for m in meals_to_reshuffle] or col == "Total Portion (g)":
-                        meal_plan_updated.at[day_idx, col] = row[col]
-            st.subheader("📅 Your Updated 7-Day Meal Plan")
-            st.dataframe(meal_plan_updated, use_container_width=True)
+            prefs = {'breakfast': breakfast, 'lunch': lunch, 'dinner': dinner}
+            updated_dislikes = list(set(dislikes + more_dislikes))
+            new_partial = generate_meal_plan(prefs, daily_calories, updated_dislikes)
+            for day in days:
+                idx = st.session_state.meal_plan[st.session_state.meal_plan["Day"] == day].index[0]
+                new_day = new_partial[new_partial["Day"] == day]
+                for meal in meals:
+                    st.session_state.meal_plan.at[idx, meal] = new_day.iloc[0][meal]
+                st.session_state.meal_plan.at[idx, "Total Portion (g)"] = new_day.iloc[0]["Total Portion (g)"]
+            st.session_state.meal_plan.to_csv(f"mealplans_{st.session_state.username}.csv", index=False)
+            st.session_state.reshuffle_mode = False
+            st.success("Plan updated!")
+            st.experimental_rerun()
 
     elif reshuffle_option == "Reshuffle entire plan":
-        new_dislikes_full = st.multiselect(
-            "Want to exclude additional foods before reshuffling the whole plan?",
-            options=df['Food'].unique()
-        )
+        new_dislikes_full = st.multiselect("Foods to avoid in new plan", df['Food'].unique())
         if st.button("✨ Confirm Full Reshuffle"):
-            updated_dislikes_full = list(set(dislikes + new_dislikes_full))
-            meal_plan_full = generate_meal_plan(preferences, daily_calories, dislikes=updated_dislikes_full)
-            st.subheader("📅 Your New Full 7-Day Meal Plan")
-            st.dataframe(meal_plan_full, use_container_width=True)
-
-else:
-    st.warning("👉 Please complete your details and click **Generate Meal Plan** to begin!")
+            prefs = {'breakfast': breakfast, 'lunch': lunch, 'dinner': dinner}
+            updated_dislikes = list(set(dislikes + new_dislikes_full))
+            new_plan = generate_meal_plan(prefs, daily_calories, updated_dislikes)
+            st.session_state.meal_plan = new_plan
+            st.session_state.meal_plan.to_csv(f"mealplans_{st.session_state.username}.csv", index=False)
+            st.session_state.reshuffle_mode = False
+            st.success("Full plan reshuffled!")
+            st.experimental_rerun()
