@@ -126,23 +126,25 @@ class AE(nn.Module):
         recon = self.decoder(z)
         return z, recon
 
+# ---- after AE class ----
 @st.cache_resource
 def get_embeddings(matrix):
-    net = AE(matrix.shape[1])          # emb_dim = 8
+    net = AE(matrix.shape[1])
     opt = optim.Adam(net.parameters(), lr=1e-3)
     crit = nn.MSELoss()
     t = torch.tensor(matrix, dtype=torch.float32)
     for _ in range(200):
         opt.zero_grad()
-        z, out = net(t)
-        crit(out, t).backward()
+        z, recon = net(t)
+        crit(recon, t).backward()
         opt.step()
     with torch.no_grad():
         z, _ = net(t)
         return z.numpy()
 
 scaled = StandardScaler().fit_transform(df[nut_cols])
-emb   = get_embeddings(scaled)
+emb    = get_embeddings(scaled)    # <-- use the new helper
+
 
 def similar(food, k=5, exclude=None):
     exclude = exclude or []
