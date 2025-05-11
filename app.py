@@ -9,6 +9,9 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
 
+# --- MUST BE FIRST Streamlit command ---
+st.set_page_config(page_title="FitBites - Personalized Meal Plans 🍽️", layout="wide")
+
 # --- Auth: User Management ---
 USER_FILE = "users.csv"
 
@@ -79,8 +82,6 @@ with st.sidebar:
         st.session_state.meal_plan = None
         st.experimental_rerun()
 
-# --- Page Setup ---
-st.set_page_config(page_title="FitBites - Personalized Meal Plans 🍽️", layout="wide")
 
 # --- Load Data ---
 @st.cache_data
