@@ -131,8 +131,12 @@ def gpt_plan(prefs,dislikes,kcal):
     dis  =", ".join(dislikes) if dislikes else "none"
     rules=("Pairings:\n"
            "• Hausa koko or koko must go with bofrot or bread & groundnuts\n"
-           "• Fufu goes with any soup except okro (no stews); may include chicken, snails or crabs\n"
-           "• Banku goes with okro soup plus any protein\n")
+           "• Fufu goes with any soup except okro soup(no stews); may include chicken, snails or crabs\n"
+           "• Banku goes with okro soup plus any protein\n"
+           "• Fried yam and cassava goes with pepper or shito no soup or stew \n"
+           "• There is no such thing as snails soup or crabs soup. So dont recommend non existent ghanaian foods have you heard?\n"
+           "• Make sure the food calories are calculated accurately and not just mentioning random figures.It has to be a realistic plan where people can follow\n"
+           "• Milo goes with bread or bofrot or biscuits\n")
     sys="You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
     user=(f"{rules}\nBuild 7-day table (Day,Breakfast,Lunch,Dinner). "
           f"Daily ≈{int(kcal)} kcal (25/35/40). Use household measures & kcal per item. "
