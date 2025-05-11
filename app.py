@@ -178,27 +178,49 @@ def classic_plan(prefs, kcal, dislikes):
         rows.append(row)
     return pd.DataFrame(rows)
 
+import json
+
 def gpt_plan(prefs, dislikes, kcal):
+    """Return 7-day DataFrame via GPT-4o.  None → failure."""
     if not OPENAI_AVAILABLE:
         return None
+
     likes = ", ".join(set(sum(prefs.values(), []))) or "any Ghanaian foods"
     dis   = ", ".join(dislikes) if dislikes else "none"
-    prompt = (
-        f"You are a Ghanaian dietitian. Build a 7-day JSON table (Day, Breakfast, "
-        f"Lunch, Dinner) using Ghanaian household measures. Daily ≈{int(kcal)} kcal "
-        f"(25/35/40). LIKES: {likes}. DISLIKES: {dis}. Include kcal in parentheses."
+
+    system_msg = (
+        "You are a Ghanaian dietitian. Respond ONLY with valid, minified JSON "
+        'like `[{"Day":"Day 1","Breakfast":"...","Lunch":"...","Dinner":"..."}]`. '
+        "Do NOT add code fences, markdown or commentary."
     )
+    user_msg = (
+        f"Build a 7-day table (keys Day, Breakfast, Lunch, Dinner). "
+        f"Daily ≈{int(kcal)} kcal split 25/35/40. "
+        f"Use household measures, show kcal per item in parentheses. "
+        f"LIKES: {likes}.  DISLIKES: {dis}."
+    )
+
     try:
-        r = client_openai.chat.completions.create(
+        resp = client_openai.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user",   "content": user_msg},
+            ],
+            temperature=0.4,
             timeout=30,
         )
-        return pd.read_json(io.StringIO(r.choices[0].message.content.strip()))
+        raw = resp.choices[0].message.content.strip()
+
+        # keep only the JSON portion
+        json_str = raw[raw.find("["): raw.rfind("]")+1]
+        data = json.loads(json_str)           # will raise if still invalid
+        return pd.DataFrame(data)
+
     except Exception as e:
-        st.error(f"OpenAI error: {e}")
+        st.error(f"OpenAI/JSON parse error: {e}")
         return None
+
 
 def recipe_llm(ing, cui):
     if not OPENAI_AVAILABLE:
