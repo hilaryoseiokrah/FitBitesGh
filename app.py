@@ -68,17 +68,14 @@ def recommend_food_nn(food_name, dataset, embeddings, top_n=5, exclude=[]):
     idx = dataset[dataset['Food'] == food_name].index[0]
     vec = embeddings[idx].reshape(1, -1)
     sims = cosine_similarity(vec, embeddings).flatten()
-    
     recommended_idx = sims.argsort()[::-1]
     recommended_foods = []
-    
     for i in recommended_idx:
         name = dataset.iloc[i]['Food']
         if name != food_name and name not in exclude:
             recommended_foods.append(name)
         if len(recommended_foods) >= top_n:
             break
-            
     return recommended_foods
 
 def calculate_bmi(weight, height_cm):
@@ -106,7 +103,6 @@ def generate_meal_plan(preferences, daily_calories, dislikes=[]):
             meal_foods = list(set(meal_foods) - set(dislikes))
             if not meal_foods:
                 meal_foods = list(set(df['Food'].sample(5).tolist()) - set(dislikes))
-
             selected = np.random.choice(meal_foods, 1)[0]
             cal = df[df['Food'] == selected]['Calories(100g)'].values[0]
             quantity = (daily_calories * portion) / cal * 100
@@ -116,7 +112,7 @@ def generate_meal_plan(preferences, daily_calories, dislikes=[]):
         plan.append(day_plan)
     return pd.DataFrame(plan)
 
-# --- Sidebar User Inputs ---
+# --- Sidebar Inputs ---
 st.sidebar.header("📋 Your Details")
 weight = st.sidebar.number_input("Current Weight (kg)", 30, 200, 90)
 target_weight = st.sidebar.number_input("Target Weight (kg)", 30, 200, 75)
@@ -133,15 +129,14 @@ dinner = st.sidebar.multiselect("Dinner Options", df['Food'].unique())
 st.sidebar.subheader("🚫 Foods You Dislike")
 dislikes = st.sidebar.multiselect("Select Foods You Don't Want in Your Plan", df['Food'].unique())
 
-# --- Main ---
+# --- Main UI ---
 st.title("🥗 Welcome to FitBites!")
 st.markdown("""
-    **Your Personalized Ghanaian Meal Plan Assistant** 🇬🇭 🍛  
-    Ready to help you hit your weight goal in a sustainable, healthy, and delicious way!  
-    Please fill out your details and food preferences on the left, then click **Generate Meal Plan**.
+**Your Personalized Ghanaian Meal Plan Assistant** 🇬🇭 🍛  
+Ready to help you hit your weight goal in a sustainable, healthy, and delicious way!  
+Please fill out your details and food preferences on the left, then click **Generate Meal Plan**.
 """)
 
-# --- Only show plan after clicking button ---
 if st.sidebar.button("✨ Generate Meal Plan"):
     bmi = calculate_bmi(weight, height)
     tdee = calculate_tdee(weight, height, age, sex, activity_level)
@@ -157,11 +152,61 @@ if st.sidebar.button("✨ Generate Meal Plan"):
         'lunch': lunch,
         'dinner': dinner
     }
+
     meal_plan = generate_meal_plan(preferences, daily_calories, dislikes=dislikes)
 
-    # --- Display the plan ---
     st.subheader("📅 Your 7-Day Meal Plan")
     st.dataframe(meal_plan, use_container_width=True)
+
+    # --- Reshuffle Section ---
+    st.markdown("### 🔄 Not feeling this plan?")
+    reshuffle_option = st.radio(
+        "Would you like to reshuffle the entire plan or just parts of it?",
+        ["Select parts to reshuffle", "Reshuffle entire plan"]
+    )
+
+    if reshuffle_option == "Select parts to reshuffle":
+        days_to_reshuffle = st.multiselect(
+            "Which day(s) would you like to reshuffle?",
+            options=meal_plan["Day"].tolist(),
+            default=meal_plan["Day"].tolist()
+        )
+
+        meals_to_reshuffle = st.multiselect(
+            "Which meal(s)?",
+            options=["Breakfast", "Lunch", "Dinner"],
+            default=["Breakfast", "Lunch", "Dinner"]
+        )
+
+        new_dislikes = st.multiselect(
+            "Any additional foods to exclude this time?",
+            options=df['Food'].unique()
+        )
+
+        if st.button("✨ Confirm Partial Reshuffle"):
+            updated_dislikes = list(set(dislikes + new_dislikes))
+            partial_prefs = {m.lower(): preferences[m.lower()] for m in meals_to_reshuffle}
+            reshuffled = generate_meal_plan(partial_prefs, daily_calories, dislikes=updated_dislikes)
+            reshuffled = reshuffled[reshuffled["Day"].isin(days_to_reshuffle)]
+            meal_plan_updated = meal_plan.copy()
+            for _, row in reshuffled.iterrows():
+                day_idx = meal_plan_updated[meal_plan_updated["Day"] == row["Day"]].index[0]
+                for col in ["Breakfast", "Lunch", "Dinner", "Total Portion (g)"]:
+                    if col.lower() in [m.lower() for m in meals_to_reshuffle] or col == "Total Portion (g)":
+                        meal_plan_updated.at[day_idx, col] = row[col]
+            st.subheader("📅 Your Updated 7-Day Meal Plan")
+            st.dataframe(meal_plan_updated, use_container_width=True)
+
+    elif reshuffle_option == "Reshuffle entire plan":
+        new_dislikes_full = st.multiselect(
+            "Want to exclude additional foods before reshuffling the whole plan?",
+            options=df['Food'].unique()
+        )
+        if st.button("✨ Confirm Full Reshuffle"):
+            updated_dislikes_full = list(set(dislikes + new_dislikes_full))
+            meal_plan_full = generate_meal_plan(preferences, daily_calories, dislikes=updated_dislikes_full)
+            st.subheader("📅 Your New Full 7-Day Meal Plan")
+            st.dataframe(meal_plan_full, use_container_width=True)
 
 else:
     st.warning("👉 Please complete your details and click **Generate Meal Plan** to begin!")
