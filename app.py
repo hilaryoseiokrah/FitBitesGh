@@ -1,12 +1,12 @@
 # -----------------------------
-# FitBites App – FULL WORKING CODE (2025-05-11)
+# FitBites App – FULL WORKING CODE
 # -----------------------------
 #   • CSV-based user login / register
 #   • Session-safe logout (Streamlit Cloud-safe)
 #   • Autoencoder similarity for Ghanaian foods
 #   • 7-day calorie-controlled plan generation
-#   • Partial or full reshuffle with dislikes support
-#   • Meal-plan persistence per user (CSV per account)
+#   • Partial / full reshuffle with dislikes support
+#   • Meal-plan CSV persistence per user
 # -----------------------------
 
 # --- Imports ---
@@ -20,9 +20,8 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
 
-# --- MUST be the first Streamlit command
+# --- MUST be first Streamlit command
 st.set_page_config(page_title="FitBites – Personalized Meal Plans 🇬🇭", layout="wide")
-
 
 # -----------------------------
 # USER AUTH (CSV STORAGE)
@@ -88,7 +87,6 @@ if not st.session_state.logged_in:
                 st.experimental_rerun()
             else:
                 st.error("❌ Invalid credentials")
-        st.stop()  # do not fall through
 
     # ----- Register tab -----
     with reg_tab:
@@ -99,15 +97,16 @@ if not st.session_state.logged_in:
                 st.success("✅ Registered! Switch to Login tab.")
             else:
                 st.warning("Username already exists")
-        st.stop()
+
+    st.stop()  # prevent rest of app until logged in
 
 
 # -----------------------------
-# LOGOUT BUTTON (shows once logged in)
+# LOGOUT BUTTON
 # -----------------------------
 with st.sidebar:
     if st.button("🚪 Log Out"):
-        # keep ONLY the logged_in flag
+        # clear all but logged_in flag
         for k in list(st.session_state.keys()):
             if k != "logged_in":
                 st.session_state.pop(k, None)
@@ -116,7 +115,7 @@ with st.sidebar:
 
 
 # -----------------------------
-# LOAD FOOD DATA + EMBEDDINGS (CACHED)
+# LOAD FOOD DATA + AUTOENCODER EMBEDDINGS
 # -----------------------------
 @st.cache_data
 def load_food():
@@ -286,7 +285,9 @@ if st.session_state.reshuffle_mode and st.session_state.meal_plan is not None:
         if st.button("Apply Partial Reshuffle"):
             prefs = {"breakfast": likes_b, "lunch": likes_l, "dinner": likes_d}
             updated_dislikes = list(set(dislikes + extra_dis))
-            new_plan = build_plan(prefs, st.session_state.daily_calories, updated_dislikes)
+            new_plan = build_plan(
+                prefs, st.session_state.daily_calories, updated_dislikes
+            )
 
             # replace only chosen cells
             for day in days_sel:
@@ -303,6 +304,7 @@ if st.session_state.reshuffle_mode and st.session_state.meal_plan is not None:
                     old_idx, "Total Portion (g)"
                 ] = new_plan.at[new_idx, "Total Portion (g)"]
 
+            # save + exit reshuffle mode
             st.session_state.meal_plan.to_csv(
                 f"mealplans_{st.session_state.username}.csv", index=False
             )
