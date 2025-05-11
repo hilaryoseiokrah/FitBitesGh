@@ -134,26 +134,29 @@ def build_plan(prefs,kcal,dislikes):
         row["Total Portion (g)"]=f"{tot:.0f}g"; rows.append(row)
     return pd.DataFrame(rows)
 
-# ────────────────────────── OpenAI combo plan -----------------------------
+# ─────────────── OpenAI meal-plan generator (new API) ───────────────
 def gpt_meal_plan(prefs, dislikes, daily_kcal):
     if not OPENAI_AVAILABLE:
-        st.error("OpenAI key missing.")
-        return None
-    likes = ", ".join(set(sum(prefs.values(),[]))) or "any Ghanaian foods"
+        st.error("OpenAI key missing."); return None
+
+    from openai import OpenAI                               # new import
+    client = OpenAI(api_key=openai.api_key)                 # re-use key
+
+    likes = ", ".join(set(sum(prefs.values(), []))) or "any Ghanaian foods"
     dis   = ", ".join(dislikes) if dislikes else "none"
-    prompt=f"""
+    prompt = f"""
 You are a Ghanaian dietitian. Build a 7-day table of balanced meals using household
 measures (scoops, ladles, cups, pieces). Daily goal ≈ {int(daily_kcal)} kcal:
-Breakfast 25 %, Lunch 35 %, Dinner 40 %. 
+Breakfast 25 %, Lunch 35 %, Dinner 40 %.
 LIKES: {likes}
 DISLIKES: {dis}
 Return ONLY valid JSON list of 7 objects with keys Day, Breakfast, Lunch, Dinner.
 Each meal string must show portions & kcal in parentheses.
 """
     try:
-        resp=openai.ChatCompletion.create(
+        resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             timeout=30,
         )
@@ -162,11 +165,15 @@ Each meal string must show portions & kcal in parentheses.
         st.error(f"OpenAI error: {e}")
         return None
 
-# ────────────────────────── Recipe generator ------------------------------
+
+# ─────────────── OpenAI recipe generator (new API) ───────────────
 def generate_recipe_llm(ingredients, cuisine):
     if not OPENAI_AVAILABLE:
-        st.error("OpenAI key missing.")
-        return None
+        st.error("OpenAI key missing."); return None
+
+    from openai import OpenAI
+    client = OpenAI(api_key=openai.api_key)
+
     prompt = (
         f"You are a recipe dictionary. Here is a list of ingredients: {ingredients}. "
         f"The cuisine is {cuisine}. Use only the available ingredients to provide a recipe for a meal."
@@ -179,10 +186,12 @@ def generate_recipe_llm(ingredients, cuisine):
         "use them as they are."
     )
     try:
-        resp=openai.ChatCompletion.create(
+        resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role":"system","content":sys_msg},
-                      {"role":"user","content":prompt}],
+            messages=[
+                {"role": "system", "content": sys_msg},
+                {"role": "user",   "content": prompt},
+            ],
             temperature=0.7,
             timeout=30,
         )
@@ -190,6 +199,7 @@ def generate_recipe_llm(ingredients, cuisine):
     except Exception as e:
         st.error(f"OpenAI error: {e}")
         return None
+
 
 # file helpers
 def plan_path(user,week): return f"mealplans_{user}_week{week}.csv"
