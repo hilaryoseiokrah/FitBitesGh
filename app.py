@@ -1,26 +1,36 @@
 # -----------------------------
 # FitBites App – FULL WORKING CODE
 # -----------------------------
-#   • CSV-based user login / register
-#   • Session-safe logout (Streamlit Cloud-safe)
-#   • Autoencoder similarity for Ghanaian foods
-#   • 7-day calorie-controlled plan generation
-#   • Partial / full reshuffle with dislikes support
-#   • Meal-plan CSV persistence per user
+#   • CSV login / register
+#   • Safe logout and page reruns on Streamlit ≥1.34
+#   • Ghanaian-food autoencoder recommender
+#   • 7-day calorie plan + partial / full reshuffle
+#   • Plan saved to mealplans_<user>.csv
 # -----------------------------
 
-# --- Imports ---
+# --- Imports & env tweaks ---
+import os
+os.environ["STREAMLIT_WATCHER_TYPE"] = "poll"  # avoid torch watcher crash
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
 
-# --- MUST be first Streamlit command
+# ---- Compatible rerun helper -----------------
+def _safe_rerun():
+    """Works on both new (st.rerun) and old (st.experimental_rerun) versions."""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+# ---------------------------------------------
+
+# MUST be first Streamlit command
 st.set_page_config(page_title="FitBites – Personalized Meal Plans 🇬🇭", layout="wide")
 
 # -----------------------------
@@ -58,40 +68,38 @@ def valid_login(username: str, password: str) -> bool:
 # -----------------------------
 # SESSION DEFAULTS
 # -----------------------------
-defaults = {
-    "logged_in": False,
-    "username": "",
-    "meal_plan": None,
-    "reshuffle_mode": False,
-    "daily_calories": None,
-}
+defaults = dict(
+    logged_in=False,
+    username="",
+    meal_plan=None,
+    reshuffle_mode=False,
+    daily_calories=None,
+)
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
-
 
 # -----------------------------
 # LOGIN / REGISTER VIEW
 # -----------------------------
 if not st.session_state.logged_in:
     st.title("🔐 Login to FitBites")
-    login_tab, reg_tab = st.tabs(["Login", "Register"])
+    tab_login, tab_reg = st.tabs(["Login", "Register"])
 
-    # ----- Login tab -----
-    with login_tab:
+    # --- Login tab ---
+    with tab_login:
         u = st.text_input("Username")
         p = st.text_input("Password", type="password")
         if st.button("Login"):
             if valid_login(u, p):
                 st.session_state.logged_in = True
                 st.session_state.username = u
-                st.experimental_rerun()
+                _safe_rerun()
             else:
                 st.error("❌ Invalid credentials")
 
-    # ----- Register tab -----
-    # ----- Register tab -----
-    with reg_tab:
-        nu  = st.text_input("Choose Username", key="reg_user")
+    # --- Register tab ---
+    with tab_reg:
+        nu = st.text_input("Choose Username", key="reg_user")
         npw = st.text_input("Choose Password", type="password", key="reg_pass")
         if st.button("Register", key="reg_btn"):
             if save_user(nu, npw):
@@ -99,25 +107,21 @@ if not st.session_state.logged_in:
             else:
                 st.warning("Username already exists")
 
-
-    st.stop()  # prevent rest of app until logged in
-
+    st.stop()  # do not render the rest until logged in
 
 # -----------------------------
 # LOGOUT BUTTON
 # -----------------------------
 with st.sidebar:
     if st.button("🚪 Log Out"):
-        # clear all but logged_in flag
         for k in list(st.session_state.keys()):
             if k != "logged_in":
                 st.session_state.pop(k, None)
         st.session_state.logged_in = False
-        st.experimental_rerun()
-
+        _safe_rerun()
 
 # -----------------------------
-# LOAD FOOD DATA + AUTOENCODER EMBEDDINGS
+# LOAD FOOD DATA + EMBEDDINGS
 # -----------------------------
 @st.cache_data
 def load_food():
@@ -170,9 +174,8 @@ def get_embeddings(mat):
 X_scaled = StandardScaler().fit_transform(df[nut_cols])
 emb = get_embeddings(X_scaled)
 
-
 # -----------------------------
-# UTILITY FUNCTIONS
+# UTILS
 # -----------------------------
 def similar(food, k=5, exclude=None):
     if exclude is None:
@@ -265,7 +268,6 @@ if st.session_state.meal_plan is not None:
     if st.button("🔄 Reshuffle Plan"):
         st.session_state.reshuffle_mode = True
 
-
 # -----------------------------
 # RESHUFFLE LOGIC
 # -----------------------------
@@ -291,7 +293,6 @@ if st.session_state.reshuffle_mode and st.session_state.meal_plan is not None:
                 prefs, st.session_state.daily_calories, updated_dislikes
             )
 
-            # replace only chosen cells
             for day in days_sel:
                 old_idx = st.session_state.meal_plan.index[
                     st.session_state.meal_plan.Day == day
@@ -301,26 +302,25 @@ if st.session_state.reshuffle_mode and st.session_state.meal_plan is not None:
                     st.session_state.meal_plan.at[old_idx, meal] = new_plan.at[
                         new_idx, meal
                     ]
-                # update total
                 st.session_state.meal_plan.at[
                     old_idx, "Total Portion (g)"
                 ] = new_plan.at[new_idx, "Total Portion (g)"]
 
-            # save + exit reshuffle mode
             st.session_state.meal_plan.to_csv(
                 f"mealplans_{st.session_state.username}.csv", index=False
             )
             st.session_state.reshuffle_mode = False
             st.success("Partial reshuffle applied!")
+            _safe_rerun()
 
     # -------- Full Reshuffle --------
     if mode == "Full":
-        extra_dis = st.multiselect(
+        extra_dis_full = st.multiselect(
             "Extra dislikes for the NEW plan", df.Food.unique()
         )
         if st.button("Apply Full Reshuffle"):
             prefs = {"breakfast": likes_b, "lunch": likes_l, "dinner": likes_d}
-            updated_dislikes = list(set(dislikes + extra_dis))
+            updated_dislikes = list(set(dislikes + extra_dis_full))
             st.session_state.meal_plan = build_plan(
                 prefs, st.session_state.daily_calories, updated_dislikes
             )
@@ -329,4 +329,4 @@ if st.session_state.reshuffle_mode and st.session_state.meal_plan is not None:
             )
             st.session_state.reshuffle_mode = False
             st.success("Full reshuffle complete!")
-            st.experimental_rerun()
+            _safe_rerun()
