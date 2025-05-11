@@ -54,8 +54,8 @@ if not st.session_state.logged_in:
             if check_credentials(login_user, login_pass):
                 st.session_state.logged_in = True
                 st.session_state.username = login_user
-                st.success("✅ Logged in successfully!")
-                st.experimental_rerun()
+                st.success("✅ Logged in successfully! Please refresh the page manually.")
+                st.stop()
             else:
                 st.error("Invalid username or password.")
 
