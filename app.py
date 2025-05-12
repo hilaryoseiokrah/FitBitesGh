@@ -335,6 +335,7 @@ with tab_plan:
         mode = st.radio("Type", ["Partial", "Full"], horizontal=True)
 
         # ---------- PARTIAL ----------
+        
         if mode == "Partial":
             days  = st.multiselect("Days",  st.session_state.meal_plan.Day.tolist())
             meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
@@ -344,32 +345,48 @@ with tab_plan:
                 prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
                 upd_dis = list(set(dislikes + extra))
 
-                # seed classic plan → collect foods for GPT
+                # seed classic → collect base foods for GPT
                 seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis)
                 base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
                               for col in ["Breakfast","Lunch","Dinner"] for x in seed_df[col]}
 
-                # run GPT or fallback to seed_df
-                new = (
+                new_plan = (
                     gpt_plan(base_foods, upd_dis, ensure_kcal())
                     if use_ai else
                     seed_df
                 )
 
-                if new is not None:
+                if new_plan is not None:
                     for d in days:
-                        if d not in new.Day.values: continue
-                        oi = st.session_state.meal_plan[st.session_state.meal_plan.Day == d].index[0]
-                        ni = new[new.Day == d].index[0]
-                        for m in meals:
-                            st.session_state.meal_plan.at[oi, m] = new.at[ni, m]
-                        st.session_state.meal_plan.at[oi, "Total Calories"] = new.at[ni, "Total Calories"]
+                        if d not in new_plan.Day.values:    # safety
+                            continue
+                        oi = st.session_state.meal_plan.loc[st.session_state.meal_plan.Day == d].index[0]
+                        ni = new_plan.loc[new_plan.Day == d].index[0]
 
+                        # copy over selected meal columns
+                        for m in meals:
+                            st.session_state.meal_plan.at[oi, m] = new_plan.at[ni, m]
+
+                        # -------- safe row-calorie update --------
+                        if "Total Calories" in st.session_state.meal_plan.columns:
+                            if "Total Calories" in new_plan.columns:
+                                st.session_state.meal_plan.at[oi, "Total Calories"] = new_plan.at[ni, "Total Calories"]
+                            else:
+                                # recompute from meal strings
+                                tot = 0
+                                for m in ["Breakfast", "Lunch", "Dinner"]:
+                                    kcal_match = re.search(r"\((\d+)\s*kcal\)", str(st.session_state.meal_plan.at[oi, m]))
+                                    if kcal_match:
+                                        tot += int(kcal_match.group(1))
+                                st.session_state.meal_plan.at[oi, "Total Calories"] = f"{tot} kcal"
+
+                    # persist & refresh
                     st.session_state.meal_plan.to_csv(
                         csv_path(st.session_state.username, st.session_state.current_week), index=False
                     )
                     st.session_state.show_reshuffle = False
                     _rerun()
+
 
         # ---------- FULL ----------
         else:
