@@ -421,31 +421,31 @@ with tab_plan:
 
 
         # ---------- FULL ----------
-        else:
-            extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
+            else:
+                extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
 
-            if st.button("Apply full"):
-                prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
-                upd_dis = list(set(dislikes + extra))
+                if st.button("Apply full"):
+                    prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
+                    upd_dis = list(set(dislikes + extra))
 
-                # seed classic plan → collect foods for GPT
-                seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis)
-                base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
-                              for col in ["Breakfast","Lunch","Dinner"] for x in seed_df[col]}
+                    # seed classic plan → collect foods for GPT
+                    seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis)
+                    base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
+                                for col in ["Breakfast","Lunch","Dinner"] for x in seed_df[col]}
 
-                new = (
-                    gpt_plan(base_foods, upd_dis, ensure_kcal())
-                    if use_ai else
-                    seed_df
-                )
-
-                if new is not None:
-                    st.session_state.meal_plan = new
-                    new.to_csv(
-                        csv_path(st.session_state.username, st.session_state.current_week), index=False
+                    new = (
+                        gpt_plan(base_foods, upd_dis, ensure_kcal())
+                        if use_ai else
+                        seed_df
                     )
-                    st.session_state.show_reshuffle = False
-                    _rerun()
+
+                    if new is not None:
+                        st.session_state.meal_plan = new
+                        new.to_csv(
+                            csv_path(st.session_state.username, st.session_state.current_week), index=False
+                        )
+                        st.session_state.show_reshuffle = False
+                        _rerun()
 
 
 
