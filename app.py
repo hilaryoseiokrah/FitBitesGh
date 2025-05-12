@@ -357,33 +357,42 @@ with tab_plan:
         
         # ─────────────────── Reshuffle panel ───────────────────
         # ─────────────────── Reshuffle helpers ───────────────────
-# ====== Reshuffle helpers ======
-# ----- reshuffle panel -----
-def ensure_kcal():  # fallback when daily_calories is None
-    return st.session_state.daily_calories or (tdee(w,h,age,sex,act)-500)
-
+# ========== Reshuffle Panel ==========
 if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
     st.markdown("### 🔄 Reshuffle Plan")
     mode = st.radio("Type", ["Partial", "Full"], horizontal=True)
 
+    def ensure_kcal():
+        return st.session_state.daily_calories or (tdee(w, h, age, sex, act) - 500)
+
     if mode == "Partial":
-        days = st.multiselect("Days", st.session_state.meal_plan.Day.tolist())
+        days = st.multiselect("Days", st.session_state.meal_plan["Day"].tolist())
         meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
         extra = st.multiselect("Extra dislikes", df.Food.unique())
 
         if st.button("Apply partial"):
             prefs = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
             upd_dis = list(set(dislikes + extra))
-            new = gpt_plan(prefs, upd_dis, ensure_kcal()) if use_ai else classic_plan(prefs, ensure_kcal(), upd_dis)
+
+            # 🍽️ Build base foods from current plan
+            base_food = {
+                re.sub(r"\s*\(.*?\)", "", f).strip().lower()
+                for col in ["Breakfast", "Lunch", "Dinner"]
+                if col in st.session_state.meal_plan.columns
+                for f in st.session_state.meal_plan[col]
+            }
+
+            new = gpt_plan(base_food, upd_dis, ensure_kcal()) if use_ai else classic_plan(prefs, ensure_kcal(), upd_dis)
 
             if new is not None:
                 changed = False
                 for d in days:
-                    if d not in new.Day.values:
-                        st.warning(f"Day {d} missing in reshuffled plan.")
-                        continue
+                    if d not in new["Day"].values:
+                        st.warning(f"⚠️ Day {d} missing in reshuffled plan."); continue
+
                     oi = st.session_state.meal_plan[st.session_state.meal_plan.Day == d].index[0]
-                    ni = new[new.Day == d].index[0]
+                    ni = new[new["Day"] == d].index[0]
+
                     for m in meals:
                         if m in new.columns and m in st.session_state.meal_plan.columns:
                             old_val = st.session_state.meal_plan.at[oi, m]
@@ -391,21 +400,23 @@ if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
                             if old_val != new_val:
                                 st.session_state.meal_plan.at[oi, m] = new_val
                                 changed = True
-                    if "Total Calories" in new.columns:
+
+                    if "Total Calories" in new.columns and "Total Calories" in st.session_state.meal_plan.columns:
                         st.session_state.meal_plan.at[oi, "Total Calories"] = new.at[ni, "Total Calories"]
+
                 if changed:
                     st.session_state.meal_plan.to_csv(csv_path(st.session_state.username, st.session_state.current_week), index=False)
                     st.session_state.show_reshuffle = False
                     _rerun()
                 else:
-                    st.warning("⚠️ Meals were not changed. Try selecting different preferences.")
+                    st.warning("⚠️ Meals were not changed. Try adjusting preferences.")
+
     else:  # Full reshuffle
         extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
         if st.button("Apply full"):
             prefs = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
             upd_dis = list(set(dislikes + extra))
 
-            # 🍽️ Build base foods from current plan
             base_food = {
                 re.sub(r"\s*\(.*?\)", "", f).strip().lower()
                 for col in ["Breakfast", "Lunch", "Dinner"]
@@ -420,12 +431,7 @@ if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
                 st.session_state.show_reshuffle = False
                 _rerun()
 
-
-
-
-       
-
-
+   
 
 # ─────────────── Profile tab ───────────────
 with tab_profile:
