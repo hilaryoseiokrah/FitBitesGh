@@ -181,39 +181,46 @@ def classic_plan(prefs, kcal, dislikes=None, exclude=None):
 # ───────────────────── GPT plan (optional) ────────────────────────
 # ───────────────────── GPT plan (reworked) ─────────────────────
 # ───────────────────── GPT plan (final safe version) ─────────────────────
+# ───────────────────── GPT plan  (combo rules + safe) ─────────────────────
 def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
     """
-    base_foods : set of foods picked by classic_plan
-    dislikes   : iterable (may be empty) – must not appear
-    kcal       : target kcals per day
-    exclude    : extra foods to avoid for variety (previous week, reshuffle)
+    base_foods : set of foods chosen by classic_plan
+    dislikes   : iterable – foods never allowed
+    kcal       : daily kcal target
+    exclude    : foods to avoid for variety
     """
     if not OPENAI_AVAILABLE:
         return None
 
     dislikes_txt = ", ".join(sorted(dislikes)) if dislikes else "none"
     avoid_txt    = ", ".join(sorted(exclude or [])) or "none"
-    base_txt     = ", ".join(sorted(base_foods))
+    base_txt     = ", ".join(sorted(base_foods)) if base_foods else "none"
 
     rules = (
         "Pairings:\n"
-        "• Hausa koko → bofrot OR bread & groundnuts\n"
-        "• Fufu → a soup (not stew) + protein\n"
-        "• Banku → okro soup + protein\n"
-        "• Fried yam/cassava → pepper or shito\n"
-        "• No fictional Ghanaian foods\n"
+        "• Hausa koko  → bofrot OR bread & groundnuts\n"
+        "• Fufu,Omotuo        → light soup / groundnut soup / palm-nut soup + NAMED protein (chicken, goat, tilapia…) no okro soup\n"
+        "• Banku       → okro soup + NAMED protein\n"
+        "• Akpler      → okro soup + NAMED protein\n"
+        "• Ga kenkey   → groundnut soup OR dried fish w/ pepper sauce\n"
+        "• Fante kenkey   → groundnut soup OR dried fish w/ pepper sauce\n"
+        "• Fried yam   → fresh pepper OR shito; may add gizzard or sausage\n"
+        "• Never use the word “protein” by itself — always specify (e.g. chicken, smoked mackerel)\n"
+        
+        "• Do NOT invent non-existent Ghanaian foods\n"
     )
 
     sys_msg = "You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
     user_msg = (
         f"{rules}"
-        "Use ONLY foods from BASE FOODS, adding correct pairings.\n"
-        f"BASE FOODS: {base_txt}\n"
-        f"DISLIKES (never include): {dislikes_txt}\n"
+        "Create 7 rows labelled Day 1-Day 7 with Breakfast / Lunch / Dinner.\n"
+        f"BASE FOODS (must appear, can be paired): {base_txt}\n"
+        f"DISLIKES (must not appear): {dislikes_txt}\n"
         f"ALSO AVOID (for variety): {avoid_txt}\n"
-        f"Create Day 1-7 rows with Breakfast / Lunch / Dinner. "
-        f"Daily total ≈{int(kcal)} kcal (25/35/40)."
+        f"Daily total ≈{int(kcal)} kcal split 25 % / 35 % / 40 %."
     )
+
+    protein_choices = ["chicken", "goat meat", "tilapia", "mackerel", "beef", "tuna"]
 
     def _query():
         reply = client_openai.chat.completions.create(
@@ -223,28 +230,38 @@ def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
             temperature=0.5, timeout=30
         ).choices[0].message.content.strip()
 
-        # convert to DataFrame
-        df = pd.DataFrame(json.loads(reply[reply.find("["): reply.rfind("]")+1]))
+        df = pd.DataFrame(
+            json.loads(reply[reply.find("["): reply.rfind("]")+1])
+        )
 
-        # ── harmonise column names ──
+        # ── harmonise columns ──
         std = {"breakfast":"Breakfast", "lunch":"Lunch",
                "dinner":"Dinner",   "day":"Day"}
         df = df.rename(columns={c: std.get(c.lower().strip(), c) for c in df.columns})
 
-        # build used-set only from columns that actually exist
+        # ── replace generic “+ protein” with real protein names ──
+        def fix_protein(txt):
+            if re.search(r"\+\s*protein", txt, flags=re.I):
+                real = np.random.choice(protein_choices)
+                return re.sub(r"\+\s*protein", f"+ {real}", txt, flags=re.I)
+            return txt
+        for col in ["Breakfast","Lunch","Dinner"]:
+            if col in df.columns:
+                df[col] = df[col].apply(fix_protein)
+
+        # ── build used-set safely ──
         cols = [c for c in ["Breakfast","Lunch","Dinner"] if c in df.columns]
         used = {re.sub(r" \(.*?\)", "", x).strip().lower()
                 for c in cols for x in df[c]}
-
         return df, used
 
-    # retry loop: need ≥70 % of base_foods present
+    # retry until ≥70 % of base foods remain
     for _ in range(max_tries):
         plan_df, used_set = _query()
         if not base_foods or len(base_foods & used_set) >= 0.7 * len(base_foods):
             return plan_df
 
-    return plan_df                      # last attempt if threshold never met
+    return plan_df            # return last attempt anyway
 # ───────────────────────────────────────────────────────────────────────────
 
 
