@@ -178,10 +178,7 @@ def classic_plan(prefs, kcal, dislikes=None, exclude=None):
 
 
 
-# ───────────────────── GPT plan (optional) ────────────────────────
-# ───────────────────── GPT plan (reworked) ─────────────────────
-# ───────────────────── GPT plan (final safe version) ─────────────────────
-# ───────────────────── GPT plan  (combo rules + safe) ─────────────────────
+
 def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
     """
     base_foods : set of foods chosen by classic_plan
@@ -199,70 +196,89 @@ def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
     rules = (
         "Pairings:\n"
         "• Hausa koko  → bofrot OR bread & groundnuts\n"
-        "• Fufu,Omotuo        → light soup / groundnut soup / palm-nut soup + NAMED protein (chicken, goat, tilapia…) no okro soup\n"
+        "• Fufu,omotuo        → light soup / groundnut soup / palm-nut soup + NAMED protein (chicken, goat, tilapia…)\n"
         "• Banku       → okro soup + NAMED protein\n"
         "• Akpler      → okro soup + NAMED protein\n"
         "• Ga kenkey   → groundnut soup OR dried fish w/ pepper sauce\n"
-        "• Fante kenkey   → groundnut soup OR dried fish w/ pepper sauce\n"
-        "• Fried yam   → fresh pepper OR shito; may add gizzard or sausage\n"
+        "• Fried yam,fried cassava   → fresh pepper OR shito; may add gizzard or sausage\n"
         "• Never use the word “protein” by itself — always specify (e.g. chicken, smoked mackerel)\n"
-        
         "• Do NOT invent non-existent Ghanaian foods\n"
     )
 
     sys_msg = "You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
     user_msg = (
         f"{rules}"
-        "Create 7 rows labelled Day 1-Day 7 with Breakfast / Lunch / Dinner.\n"
+        "Create 7 rows labelled Day 1–Day 7 with Breakfast / Lunch / Dinner.\n"
         f"BASE FOODS (must appear, can be paired): {base_txt}\n"
         f"DISLIKES (must not appear): {dislikes_txt}\n"
         f"ALSO AVOID (for variety): {avoid_txt}\n"
         f"Daily total ≈{int(kcal)} kcal split 25 % / 35 % / 40 %."
     )
 
-    protein_choices = ["chicken", "goat meat", "tilapia", "mackerel", "beef", "tuna"]
-
     def _query():
         reply = client_openai.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role":"system","content":sys_msg},
-                      {"role":"user"  ,"content":user_msg}],
-            temperature=0.5, timeout=30
+            messages=[{"role": "system", "content": sys_msg},
+                      {"role": "user",   "content": user_msg}],
+            temperature=0.5,
+            timeout=30
         ).choices[0].message.content.strip()
 
-        df = pd.DataFrame(
-            json.loads(reply[reply.find("["): reply.rfind("]")+1])
-        )
+        raw = json.loads(reply[reply.find("["): reply.rfind("]")+1])
 
-        # ── harmonise columns ──
-        std = {"breakfast":"Breakfast", "lunch":"Lunch",
-               "dinner":"Dinner",   "day":"Day"}
-        df = df.rename(columns={c: std.get(c.lower().strip(), c) for c in df.columns})
+        # ---------- Normalize: flatten or unpack ----------
+        rows = []
+        for i, block in enumerate(raw, 1):
+            # case A: {"Breakfast": "...", "Lunch": "..."}
+            if isinstance(block, dict) and "Breakfast" in block:
+                row = dict(block)
+                row["Day"] = f"Day {i}"
+                rows.append(row)
+            # case B: {"Day 1": {...}}
+            elif isinstance(block, dict):
+                for day_key, meals in block.items():
+                    row = dict(meals)
+                    row["Day"] = day_key
+                    rows.append(row)
 
-        # ── replace generic “+ protein” with real protein names ──
+        df = pd.DataFrame(rows)
+
+        # ---------- Clean & rename ----------
+        std_cols = {"breakfast": "Breakfast", "lunch": "Lunch",
+                    "dinner": "Dinner", "day": "Day"}
+        df = df.rename(columns={c: std_cols.get(c.lower().strip(), c) for c in df.columns})
+
+        # fill missing columns
+        for c in ["Day", "Breakfast", "Lunch", "Dinner"]:
+            if c not in df.columns:
+                df[c] = None
+        df = df[["Day", "Breakfast", "Lunch", "Dinner"]]
+
+        # ---------- Replace "+ protein" with real ones ----------
+        protein_choices = ["chicken", "goat meat", "tilapia", "smoked mackerel", "beef", "turkey"]
         def fix_protein(txt):
-            if re.search(r"\+\s*protein", txt, flags=re.I):
-                real = np.random.choice(protein_choices)
-                return re.sub(r"\+\s*protein", f"+ {real}", txt, flags=re.I)
+            if isinstance(txt, str) and "protein" in txt.lower():
+                return re.sub(r"\+\s*protein", f"+ {np.random.choice(protein_choices)}", txt, flags=re.I)
             return txt
-        for col in ["Breakfast","Lunch","Dinner"]:
-            if col in df.columns:
-                df[col] = df[col].apply(fix_protein)
+        for col in ["Breakfast", "Lunch", "Dinner"]:
+            df[col] = df[col].apply(fix_protein)
 
-        # ── build used-set safely ──
-        cols = [c for c in ["Breakfast","Lunch","Dinner"] if c in df.columns]
+        # ---------- Used set for overlap checking ----------
         used = {re.sub(r" \(.*?\)", "", x).strip().lower()
-                for c in cols for x in df[c]}
+                for col in ["Breakfast", "Lunch", "Dinner"]
+                for x in df[col] if pd.notna(x)}
+
         return df, used
 
-    # retry until ≥70 % of base foods remain
+    # Retry up to N times until GPT keeps ≥70 % of base foods
     for _ in range(max_tries):
-        plan_df, used_set = _query()
+        df_plan, used_set = _query()
         if not base_foods or len(base_foods & used_set) >= 0.7 * len(base_foods):
-            return plan_df
+            return df_plan
 
-    return plan_df            # return last attempt anyway
-# ───────────────────────────────────────────────────────────────────────────
+    return df_plan  # return last attempt even if overlap too small
+# ─────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────
 
 
 
