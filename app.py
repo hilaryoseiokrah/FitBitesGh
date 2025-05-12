@@ -133,22 +133,31 @@ def tdee(w,h,age,sex,act):
     mult = dict(sedentary=1.2, light=1.375, moderate=1.55, active=1.725, superactive=1.9)[act]
     return (10*w + 6.25*h - 5*age + (5 if sex=="male" else -161)) * mult
 
-def classic_plan(prefs, kcal, dislikes):
-    split = dict(breakfast=0.25, lunch=0.35, dinner=0.4)
-    out   = []
-    for d in range(1,8):
-        row, tot = {"Day":f"Day {d}"}, 0
+def classic_plan(prefs, kcal, dislikes, exclude=None):
+    exclude = set(exclude or [])
+    split   = dict(breakfast=0.25, lunch=0.35, dinner=0.4)
+    out     = []
+
+    for d in range(1, 8):
+        row, tot = {"Day": f"Day {d}"}, 0
         for meal, f in split.items():
-            opts=[]
-            for s in prefs.get(meal, []): opts.extend(similar(s, exc=dislikes))
-            if not opts: opts = list(set(df.Food.unique()) - set(dislikes))
+            opts = []
+            for s in prefs.get(meal, []):
+                opts.extend(similar(s, exc=dislikes | exclude))
+            if not opts:
+                opts = list(set(df.Food.unique()) - set(dislikes) - exclude)
             if not opts:
                 pick, meal_kcal = "No food", 0
             else:
-                pick, meal_kcal = np.random.choice(opts), kcal*f
-            row[meal.capitalize()] = f"{pick} ({meal_kcal:.0f} kcal)"; tot += meal_kcal
-        row["Total Calories"] = f"{tot:.0f} kcal"; out.append(row)
+                pick           = np.random.choice(opts)
+                meal_kcal      = kcal * f
+                exclude.add(pick)                   # prevent immediate reuse
+            row[meal.capitalize()] = f"{pick} ({meal_kcal:.0f} kcal)"
+            tot += meal_kcal
+        row["Total Calories"] = f"{tot:.0f} kcal"
+        out.append(row)
     return pd.DataFrame(out)
+
 
 # ───────────────────── GPT plan (optional) ────────────────────────
 def gpt_plan(prefs, dislikes, kcal):
@@ -201,23 +210,26 @@ with tab_plan:
         use_ai  = st.checkbox("🤖 Use AI combos", value=prof.get("use_ai",False), disabled=not OPENAI_AVAILABLE)
 
     def generate_plan(next_week=False):
-        kcal   = tdee(w,h,age,sex,act) - 500
-        prefs  = dict(breakfast=likes_b,lunch=likes_l,dinner=likes_d)
-        week   = (max(weeks(st.session_state.username) or [0])+1) if next_week else (st.session_state.current_week or 1)
+        kcal   = tdee(w, h, age, sex, act) - 500      # 500 kcal deficit ≃ 0.5 kg/week
+        prefs  = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
+        week   = (max(weeks(st.session_state.username) or [0]) + 1) if next_week else (st.session_state.current_week or 1)
+
         plan   = gpt_plan(prefs, dislikes, kcal) if use_ai else classic_plan(prefs, kcal, dislikes)
+
         if plan is not None:
             plan.to_csv(csv_path(st.session_state.username, week), index=False)
             st.session_state.meal_plan, st.session_state.current_week = plan, week
             st.session_state.daily_calories = kcal
-            months = abs(w - tw) / 2
-            st.success(f"✅ Week {week} saved. Daily kcal: {int(kcal)}")
-            st.info   (f"⏳ Estimated time to reach {tw} kg: **{months:.1f} months**")
-            # save profile
-            prof.update(weight=w,height=h,age=age,sex=sex,activity=act,target_weight=tw,
-                        likes_b=likes_b,likes_l=likes_l,likes_d=likes_d,
-                        dislikes=dislikes,use_ai=use_ai,last_updated=str(datetime.date.today()))
-            save_prof(st.session_state.username, prof)
-            st.session_state.profile = prof
+
+            # ───── realistic timeline ─────
+            diff_kg  = abs(w - tw)
+            weeks_to = diff_kg / 0.5                 # 0.5 kg per week
+            months   = weeks_to / 4.33
+
+            st.success(f"✅ Week {week} saved · Daily target ≈ {int(kcal)} kcal")
+            st.info   (f"⏳ At 0.5 kg/week you’ll hit {tw} kg in about **{weeks_to:.0f} weeks (~{months:.1f} months)**")
+
+            # save profile …
 
     col1,col2 = st.columns(2)
     if col1.button("✨ Generate / Update"): generate_plan(False)
@@ -239,46 +251,90 @@ with tab_plan:
         if st.button("🔄 Reshuffle"): st.session_state.show_reshuffle=True
 
     # Reshuffle helpers
-    def ensure_kcal(): return st.session_state.daily_calories or (tdee(w,h,age,sex,act)-500)
+        
+    def ensure_kcal():         
+        return st.session_state.daily_calories or (tdee(w,h,age,sex,act) - 500)
 
     if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
         st.markdown("### 🔄 Reshuffle Plan")
-        mode = st.radio("Type",["Partial","Full"], horizontal=True)
+        mode = st.radio("Type", ["Partial", "Full"], horizontal=True)
 
-        if mode=="Partial":
-            days  = st.multiselect("Days", st.session_state.meal_plan.Day.tolist())
-            meals = st.multiselect("Meals",["Breakfast","Lunch","Dinner"])
+        # ---------- PARTIAL RESHUFFLE ----------
+        if mode == "Partial":
+            days  = st.multiselect("Days",  st.session_state.meal_plan.Day.tolist())
+            meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
             extra = st.multiselect("Extra dislikes", df.Food.unique())
+
             if st.button("Apply partial"):
-                prefs   = dict(breakfast=likes_b,lunch=likes_l,dinner=likes_d)
+                # foods currently present in the selected (day, meal) cells
+                exclude = set()
+                for d in days:
+                    for m in meals:
+                        current_food = (
+                            st.session_state.meal_plan
+                            .loc[st.session_state.meal_plan.Day == d, m]
+                            .iat[0]
+                            .split(" (")[0]
+                        )
+                        exclude.add(current_food)
+
+                prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
                 upd_dis = list(set(dislikes + extra))
-                new     = gpt_plan(prefs, upd_dis, ensure_kcal()) if use_ai else classic_plan(prefs, ensure_kcal(), upd_dis)
+
+                new = (
+                    gpt_plan(prefs, upd_dis, ensure_kcal())
+                    if use_ai else
+                    classic_plan(prefs, ensure_kcal(), upd_dis, exclude=exclude)
+                )
 
                 if new is not None:
-                    missing = [d for d in days if d not in new.Day.values]
-                    if missing: st.warning("Days not in reshuffle: " + ", ".join(missing))
                     for d in days:
-                        if d not in new.Day.values: continue
+                        if d not in new.Day.values:
+                            continue
                         oi = st.session_state.meal_plan[st.session_state.meal_plan.Day == d].index[0]
                         ni = new[new.Day == d].index[0]
                         for m in meals:
-                            if m in new.columns and m in st.session_state.meal_plan.columns:
-                                st.session_state.meal_plan.at[oi, m] = new.at[ni, m]
-                        if "Total Calories" in new.columns:
-                            st.session_state.meal_plan.at[oi,"Total Calories"] = new.at[ni,"Total Calories"]
-                    st.session_state.meal_plan.to_csv(csv_path(st.session_state.username, st.session_state.current_week), index=False)
-                    st.session_state.show_reshuffle=False; _rerun()
+                            st.session_state.meal_plan.at[oi, m] = new.at[ni, m]
+                        st.session_state.meal_plan.at[oi, "Total Calories"] = new.at[ni, "Total Calories"]
 
-        else:  # Full reshuffle
+                    st.session_state.meal_plan.to_csv(
+                        csv_path(st.session_state.username, st.session_state.current_week), index=False
+                    )
+                    st.session_state.show_reshuffle = False
+                    _rerun()
+
+        # ---------- FULL RESHUFFLE ----------
+        else:
             extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
+
             if st.button("Apply full"):
-                prefs   = dict(breakfast=likes_b,lunch=likes_l,dinner=likes_d)
+                # exclude EVERY food in the current week to guarantee freshness
+                exclude = set()
+                for m in ["Breakfast", "Lunch", "Dinner"]:
+                    exclude.update(
+                        st.session_state.meal_plan[m]
+                        .str.split(" \\(")
+                        .str[0]
+                        .tolist()
+                    )
+
+                prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
                 upd_dis = list(set(dislikes + extra))
-                new     = gpt_plan(prefs, upd_dis, ensure_kcal()) if use_ai else classic_plan(prefs, ensure_kcal(), upd_dis)
+
+                new = (
+                    gpt_plan(prefs, upd_dis, ensure_kcal())
+                    if use_ai else
+                    classic_plan(prefs, ensure_kcal(), upd_dis, exclude=exclude)
+                )
+
                 if new is not None:
                     st.session_state.meal_plan = new
-                    new.to_csv(csv_path(st.session_state.username, st.session_state.current_week), index=False)
-                    st.session_state.show_reshuffle=False; _rerun()
+                    new.to_csv(
+                        csv_path(st.session_state.username, st.session_state.current_week), index=False
+                    )
+                    st.session_state.show_reshuffle = False
+                    _rerun()
+
 
 # ─────────────── Profile tab ───────────────
 with tab_profile:
