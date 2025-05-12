@@ -308,33 +308,41 @@ with tab_plan:
         use_ai  = st.checkbox("🤖 Use AI combos", value=prof.get("use_ai",False), disabled=not OPENAI_AVAILABLE)
 
     def generate_plan(next_week=False):
-        kcal   = tdee(w,h,age,sex,act) - 500
-        prefs  = dict(breakfast=likes_b,lunch=likes_l,dinner=likes_d)
-        week   = (max(weeks(st.session_state.username) or [0])+1) if next_week else (st.session_state.current_week or 1)
+    kcal = tdee(w, h, age, sex, act) - 500
+    prefs = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
+    week = (max(weeks(st.session_state.username) or [0]) + 1) if next_week else (st.session_state.current_week or 1)
 
-        # ---------- build a seed plan with your classic model ----------
-        base_df   = classic_plan(prefs, kcal, dislikes)
-        base_food = {re.sub(r" \\(.*?\\)", "", x).strip().lower()
-                    for col in ["Breakfast","Lunch","Dinner"] for x in base_df[col]}
+    # extract base foods from user's preferences
+    base_food = set(sum(prefs.values(), []))
 
-        # ---------- choose final plan ----------
-        if use_ai:
-            # exclude everything in current plan for variety
-            old_food = set()
-            if st.session_state.meal_plan is not None:
-                for col in ["Breakfast","Lunch","Dinner"]:
-                    old_food.update(
-                        st.session_state.meal_plan[col].str.split(" \\(").str[0].str.lower()
-                    )
-            plan = gpt_plan(base_food, dislikes, kcal, exclude=old_food)
-        else:
-            plan = base_df
+    # collect previous foods to exclude (for variety)
+    old_food = set()
+    if st.session_state.meal_plan is not None:
+        for col in ["Breakfast", "Lunch", "Dinner"]:
+            if col in st.session_state.meal_plan.columns:
+                old_food |= {
+                    x.split(" (")[0].strip().lower()
+                    for x in st.session_state.meal_plan[col].dropna()
+                }
 
-        if plan is not None:
-            plan.to_csv(csv_path(st.session_state.username, week), index=False)
-            st.session_state.meal_plan, st.session_state.current_week = plan, week
-            st.session_state.daily_calories = kcal
-            # timeline message … (unchanged)
+    # choose planning method
+    plan = gpt_plan(base_food, dislikes, kcal, exclude=old_food) if use_ai else classic_plan(prefs, kcal, dislikes)
+
+    if plan is not None:
+        plan.to_csv(csv_path(st.session_state.username, week), index=False)
+        st.session_state.meal_plan = plan
+        st.session_state.current_week = week
+        st.session_state.daily_calories = kcal
+        months = abs(w - tw) / 2
+        st.success(f"✅ Week {week} saved. Daily kcal: {int(kcal)}")
+        st.info(f"⏳ Estimated time to reach {tw} kg: **{months:.1f} months**")
+
+        # update profile
+        prof.update(weight=w, height=h, age=age, sex=sex, activity=act, target_weight=tw,
+                    likes_b=likes_b, likes_l=likes_l, likes_d=likes_d,
+                    dislikes=dislikes, use_ai=use_ai, last_updated=str(datetime.date.today()))
+        save_prof(st.session_state.username, prof)
+        st.session_state.profile = prof
 
             # save profile …
 
