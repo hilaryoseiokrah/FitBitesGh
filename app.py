@@ -327,15 +327,16 @@ with tab_plan:
     # Reshuffle helpers
         
         # ─────────────────── Reshuffle panel ───────────────────
+        # ─────────────────── Reshuffle helpers ───────────────────
     def ensure_kcal():
         return st.session_state.daily_calories or (tdee(w, h, age, sex, act) - 500)
 
+    # ─────────────────── Reshuffle panel ───────────────────
     if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
         st.markdown("### 🔄 Reshuffle Plan")
         mode = st.radio("Type", ["Partial", "Full"], horizontal=True)
 
         # ---------- PARTIAL ----------
-        
         if mode == "Partial":
             days  = st.multiselect("Days",  st.session_state.meal_plan.Day.tolist())
             meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
@@ -345,10 +346,63 @@ with tab_plan:
                 prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
                 upd_dis = list(set(dislikes + extra))
 
-                # seed classic → collect base foods for GPT
+                # 1️⃣  exclude foods that are already in the selected (day, meal) cells
+                current_cells = {
+                    re.sub(r" \(.*?\)", "", st.session_state.meal_plan.loc[
+                        st.session_state.meal_plan.Day == d, m].iat[0]
+                    ).strip().lower()
+                    for d in days for m in meals
+                }
+
+                # 2️⃣  seed classic plan just to harvest base-foods set
+                seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis, exclude=current_cells)
+                base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
+                              for col in ["Breakfast", "Lunch", "Dinner"] for x in seed_df[col]}
+
+                # 3️⃣  build new plan (GPT or classic) while excluding current cells
+                new_plan = (
+                    gpt_plan(base_foods, upd_dis, ensure_kcal(), exclude=current_cells)
+                    if use_ai else
+                    seed_df
+                )
+
+                if new_plan is not None:
+                    for d in days:
+                        if d not in new_plan.Day.values:
+                            continue
+                        oi = st.session_state.meal_plan.loc[st.session_state.meal_plan.Day == d].index[0]
+                        ni = new_plan.loc[new_plan.Day == d].index[0]
+
+                        # overwrite only requested meals
+                        for m in meals:
+                            st.session_state.meal_plan.at[oi, m] = new_plan.at[ni, m]
+
+                        # recompute row-kcal safely
+                        tot = 0
+                        for m in ["Breakfast", "Lunch", "Dinner"]:
+                            kcal_match = re.search(r"\((\d+)\s*kcal\)", str(st.session_state.meal_plan.at[oi, m]))
+                            if kcal_match:
+                                tot += int(kcal_match.group(1))
+                        st.session_state.meal_plan.at[oi, "Total Calories"] = f"{tot} kcal"
+
+                    st.session_state.meal_plan.to_csv(
+                        csv_path(st.session_state.username, st.session_state.current_week), index=False
+                    )
+                    st.session_state.show_reshuffle = False
+                    _rerun()
+
+        # ---------- FULL ----------
+        else:
+            extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
+
+            if st.button("Apply full"):
+                prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
+                upd_dis = list(set(dislikes + extra))
+
+                # seed classic  ➜ base foods set
                 seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis)
                 base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
-                              for col in ["Breakfast","Lunch","Dinner"] for x in seed_df[col]}
+                              for col in ["Breakfast", "Lunch", "Dinner"] for x in seed_df[col]}
 
                 new_plan = (
                     gpt_plan(base_foods, upd_dis, ensure_kcal())
@@ -357,35 +411,13 @@ with tab_plan:
                 )
 
                 if new_plan is not None:
-                    for d in days:
-                        if d not in new_plan.Day.values:    # safety
-                            continue
-                        oi = st.session_state.meal_plan.loc[st.session_state.meal_plan.Day == d].index[0]
-                        ni = new_plan.loc[new_plan.Day == d].index[0]
-
-                        # copy over selected meal columns
-                        for m in meals:
-                            st.session_state.meal_plan.at[oi, m] = new_plan.at[ni, m]
-
-                        # -------- safe row-calorie update --------
-                        if "Total Calories" in st.session_state.meal_plan.columns:
-                            if "Total Calories" in new_plan.columns:
-                                st.session_state.meal_plan.at[oi, "Total Calories"] = new_plan.at[ni, "Total Calories"]
-                            else:
-                                # recompute from meal strings
-                                tot = 0
-                                for m in ["Breakfast", "Lunch", "Dinner"]:
-                                    kcal_match = re.search(r"\((\d+)\s*kcal\)", str(st.session_state.meal_plan.at[oi, m]))
-                                    if kcal_match:
-                                        tot += int(kcal_match.group(1))
-                                st.session_state.meal_plan.at[oi, "Total Calories"] = f"{tot} kcal"
-
-                    # persist & refresh
-                    st.session_state.meal_plan.to_csv(
+                    st.session_state.meal_plan = new_plan
+                    new_plan.to_csv(
                         csv_path(st.session_state.username, st.session_state.current_week), index=False
                     )
                     st.session_state.show_reshuffle = False
                     _rerun()
+
 
 
         # ---------- FULL ----------
