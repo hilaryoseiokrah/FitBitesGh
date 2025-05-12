@@ -75,11 +75,18 @@ if not st.session_state.logged_in:
             else: st.error("Invalid credentials")
 
     with tab_reg:
-        nu  = st.text_input("Choose Username")
+        nu = st.text_input("Choose Username")
         npw = st.text_input("Choose Password", type="password")
+        agree = st.checkbox("I agree that my data (profile and plans) may be viewed by the admin for monitoring and improvement purposes.")
+
         if st.button("Create account"):
-            if save_user(nu, npw): st.success("Account created!")
-            else: st.warning("Username already exists")
+            if not agree:
+                st.warning("You must accept the data use policy to register.")
+            elif save_user(nu, npw):  # this will be updated to hash below
+                st.success("Account created!")
+            else:
+                st.warning("Username already exists.")
+
 
     st.stop()   # ── end early until logged-in
 
@@ -392,7 +399,6 @@ if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
                     _rerun()
                 else:
                     st.warning("⚠️ Meals were not changed. Try selecting different preferences.")
-
     else:  # Full reshuffle
         extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
         if st.button("Apply full"):
@@ -482,3 +488,16 @@ with tab_recipe:
             if rec:
                 st.markdown(rec)
                 st.download_button("Save txt", rec.encode(), "recipe.txt", "text/plain")
+# ========== Admin Panel ==========
+if st.session_state.username == "hilaryadmin":
+    st.markdown("## 🛠 Admin Panel")
+
+    users_path = os.path.join(DATA_DIR, "users.csv")
+    if os.path.isfile(users_path):
+        user_df = pd.read_csv(users_path)
+        st.subheader("👥 Registered Users")
+        st.dataframe(user_df)
+
+        st.download_button("📥 Download Users CSV", user_df.to_csv(index=False).encode(), file_name="users.csv")
+    else:
+        st.warning("No users found yet.")
