@@ -278,7 +278,7 @@ def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
 
     return df_plan  # return last attempt even if overlap too small
 # ─────────────────────────────────────────────────────────────────────────
-──────────────────────────────────────
+
 
 
 
