@@ -179,105 +179,87 @@ def classic_plan(prefs, kcal, dislikes=None, exclude=None):
 
 
 
+# ───────────────────── GPT plan (with calories from CSV) ─────────────────────
 def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
     """
-    base_foods : set of foods chosen by classic_plan
-    dislikes   : iterable – foods never allowed
-    kcal       : daily kcal target
-    exclude    : foods to avoid for variety
+    Build a 7-day JSON plan with GPT, using foods already picked by classic_plan.
+
+    base_foods : set of foods chosen by classic plan (single-word form)
+    dislikes   : iterable (can be []) – foods user never wants
+    kcal       : target kcals / day
+    exclude    : foods to avoid for variety (prev. week, reshuffle, etc.)
     """
     if not OPENAI_AVAILABLE:
         return None
 
+    # Build calorie map string from the CSV
+    try:
+        calorie_map = df.set_index("Food")["Calories(100g)"].dropna().to_dict()
+        cal_text = ", ".join(f"{food}: {round(kcal)} kcal/100g" for food, kcal in calorie_map.items())
+    except Exception as e:
+        st.error("Could not prepare calorie map from CSV."); return None
+
     dislikes_txt = ", ".join(sorted(dislikes)) if dislikes else "none"
     avoid_txt    = ", ".join(sorted(exclude or [])) or "none"
-    base_txt     = ", ".join(sorted(base_foods)) if base_foods else "none"
+    base_txt     = ", ".join(sorted(base_foods))
 
+    # Meal pairing rules
     rules = (
         "Pairings:\n"
-        "• Hausa koko  → bofrot OR bread & groundnuts\n"
-        "• Fufu,omotuo        → light soup / groundnut soup / palm-nut soup + NAMED protein (chicken, goat, tilapia…)\n"
-        "• Banku       → okro soup + NAMED protein\n"
-        "• Akpler      → okro soup + NAMED protein\n"
-        "• Ga kenkey   → groundnut soup OR dried fish w/ pepper sauce\n"
-        "• Fried yam,fried cassava   → fresh pepper OR shito; may add gizzard or sausage\n"
-        "• Never use the word “protein” by itself — always specify (e.g. chicken, smoked mackerel)\n"
-        "• Do NOT invent non-existent Ghanaian foods\n"
+        "• Hausa koko must pair with bofrot OR bread & groundnuts\n"
+        "• Fufu must come with a soup (not stew) and a protein like chicken or goat\n"
+        "• Banku must come with okro soup and a protein like fish or snails\n"
+        "• Fried yam or cassava must come with pepper or shito\n"
+        "• Akpler must go with okro soup\n"
+        "• Avoid unrealistic combinations and do not invent new Ghanaian foods\n"
+        "• Use realistic household measures (e.g. 1 ladle, 1 cup, 1 wrap) when estimating quantity\n"
+        "• Calorie values must reflect the amounts served using the CALORIE VALUES provided below"
     )
 
-    sys_msg = "You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
-    user_msg = (
-        f"{rules}"
-        "Create 7 rows labelled Day 1–Day 7 with Breakfast / Lunch / Dinner.\n"
-        f"BASE FOODS (must appear, can be paired): {base_txt}\n"
-        f"DISLIKES (must not appear): {dislikes_txt}\n"
-        f"ALSO AVOID (for variety): {avoid_txt}\n"
-        f"Daily total ≈{int(kcal)} kcal split 25 % / 35 % / 40 %."
+    # Prompt
+    sys_msg  = "You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
+    user_tpl = (
+        f"{rules}\n\n"
+        f"BASE FOODS: {base_txt}\n"
+        f"DISLIKES: {dislikes_txt}\n"
+        f"AVOID: {avoid_txt}\n"
+        f"CALORIE VALUES (per 100g): {cal_text}\n"
+        f"Build a 7-day table (Day 1–Day 7) with columns for Breakfast, Lunch, Dinner.\n"
+        f"Daily total ≈ {int(kcal)} kcal, split 25%/35%/40%.\n"
+        "Each meal should show food pairing and estimated calories in brackets. Example: 'banku + okro soup (500 kcal)'"
     )
 
-    def _query():
+    def _ask_gpt():
         reply = client_openai.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": sys_msg},
-                      {"role": "user",   "content": user_msg}],
+            messages=[
+                {"role": "system", "content": sys_msg},
+                {"role": "user",   "content": user_tpl}
+            ],
             temperature=0.5,
             timeout=30
         ).choices[0].message.content.strip()
 
-        raw = json.loads(reply[reply.find("["): reply.rfind("]")+1])
+        df_plan = pd.DataFrame(json.loads(reply[reply.find("["): reply.rfind("]") + 1]))
 
-        # ---------- Normalize: flatten or unpack ----------
-        rows = []
-        for i, block in enumerate(raw, 1):
-            # case A: {"Breakfast": "...", "Lunch": "..."}
-            if isinstance(block, dict) and "Breakfast" in block:
-                row = dict(block)
-                row["Day"] = f"Day {i}"
-                rows.append(row)
-            # case B: {"Day 1": {...}}
-            elif isinstance(block, dict):
-                for day_key, meals in block.items():
-                    row = dict(meals)
-                    row["Day"] = day_key
-                    rows.append(row)
+        # Standardize column names
+        std_cols = {"breakfast": "Breakfast", "lunch": "Lunch", "dinner": "Dinner", "day": "Day"}
+        df_plan = df_plan.rename(columns={c: std_cols.get(c.lower().strip(), c) for c in df_plan.columns})
 
-        df = pd.DataFrame(rows)
+        # Extract clean used food names (remove kcal parentheses)
+        cols_in = [c for c in ["Breakfast", "Lunch", "Dinner"] if c in df_plan.columns]
+        used = {re.sub(r" \(.*?\)", "", x).strip().lower() for c in cols_in for x in df_plan[c]}
 
-        # ---------- Clean & rename ----------
-        std_cols = {"breakfast": "Breakfast", "lunch": "Lunch",
-                    "dinner": "Dinner", "day": "Day"}
-        df = df.rename(columns={c: std_cols.get(c.lower().strip(), c) for c in df.columns})
+        return df_plan, used
 
-        # fill missing columns
-        for c in ["Day", "Breakfast", "Lunch", "Dinner"]:
-            if c not in df.columns:
-                df[c] = None
-        df = df[["Day", "Breakfast", "Lunch", "Dinner"]]
-
-        # ---------- Replace "+ protein" with real ones ----------
-        protein_choices = ["chicken", "goat meat", "tilapia", "smoked mackerel", "beef", "turkey"]
-        def fix_protein(txt):
-            if isinstance(txt, str) and "protein" in txt.lower():
-                return re.sub(r"\+\s*protein", f"+ {np.random.choice(protein_choices)}", txt, flags=re.I)
-            return txt
-        for col in ["Breakfast", "Lunch", "Dinner"]:
-            df[col] = df[col].apply(fix_protein)
-
-        # ---------- Used set for overlap checking ----------
-        used = {re.sub(r" \(.*?\)", "", x).strip().lower()
-                for col in ["Breakfast", "Lunch", "Dinner"]
-                for x in df[col] if pd.notna(x)}
-
-        return df, used
-
-    # Retry up to N times until GPT keeps ≥70 % of base foods
+    # Retry if <70% base food reused
     for _ in range(max_tries):
-        df_plan, used_set = _query()
+        df_out, used_set = _ask_gpt()
         if not base_foods or len(base_foods & used_set) >= 0.7 * len(base_foods):
-            return df_plan
+            return df_out
 
-    return df_plan  # return last attempt even if overlap too small
-# ─────────────────────────────────────────────────────────────────────────
+    return df_out  # fallback after retries
+
 
 
 
@@ -310,24 +292,20 @@ with tab_plan:
     def generate_plan(next_week=False):
         kcal = tdee(w, h, age, sex, act) - 500
         prefs = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
-        week = (max(weeks(st.session_state.username) or [0]) + 1) if next_week else (st.session_state.current_week or 1)
+        week  = (max(weeks(st.session_state.username) or [0]) + 1) if next_week else (st.session_state.current_week or 1)
 
-        # extract base foods from user's preferences
-        base_food = set(sum(prefs.values(), []))
+        # ----- if AI combos, build base_food first via classic -----
+        base_food = set()
+        if use_ai:
+            temp_classic = classic_plan(prefs, kcal, dislikes)
+            base_food = {
+                re.sub(r"\s*\(.*?\)", "", f).strip().lower()
+                for col in ["Breakfast", "Lunch", "Dinner"] if col in temp_classic.columns
+                for f in temp_classic[col]
+            }
 
-        # collect previous foods to exclude (for variety)
-        old_food = set()
-        if st.session_state.meal_plan is not None:
-            for col in ["Breakfast", "Lunch", "Dinner"]:
-                if col in st.session_state.meal_plan.columns:
-                    old_food |= {
-                        x.split(" (")[0].strip().lower()
-                        for x in st.session_state.meal_plan[col].dropna()
-                    }
-
-        # choose planning method
-        plan = gpt_plan(base_food, dislikes, kcal, exclude=old_food) if use_ai else classic_plan(prefs, kcal, dislikes)
-
+        # ----- generate plan -----
+        plan = gpt_plan(base_food, dislikes, kcal) if use_ai else classic_plan(prefs, kcal, dislikes)
         if plan is not None:
             plan.to_csv(csv_path(st.session_state.username, week), index=False)
             st.session_state.meal_plan = plan
@@ -337,12 +315,15 @@ with tab_plan:
             st.success(f"✅ Week {week} saved. Daily kcal: {int(kcal)}")
             st.info(f"⏳ Estimated time to reach {tw} kg: **{months:.1f} months**")
 
-            # update profile
-            prof.update(weight=w, height=h, age=age, sex=sex, activity=act, target_weight=tw,
-                        likes_b=likes_b, likes_l=likes_l, likes_d=likes_d,
-                        dislikes=dislikes, use_ai=use_ai, last_updated=str(datetime.date.today()))
+            # Save profile
+            prof.update(
+                weight=w, height=h, age=age, sex=sex, activity=act, target_weight=tw,
+                likes_b=likes_b, likes_l=likes_l, likes_d=likes_d,
+                dislikes=dislikes, use_ai=use_ai, last_updated=str(datetime.date.today())
+            )
             save_prof(st.session_state.username, prof)
             st.session_state.profile = prof
+
 
             # save profile …
 
@@ -369,124 +350,75 @@ with tab_plan:
         
         # ─────────────────── Reshuffle panel ───────────────────
         # ─────────────────── Reshuffle helpers ───────────────────
-    def ensure_kcal():
-        return st.session_state.daily_calories or (tdee(w, h, age, sex, act) - 500)
+# ====== Reshuffle helpers ======
+def ensure_kcal(): 
+    return st.session_state.daily_calories or (tdee(w,h,age,sex,act) - 500)
 
-    # ─────────────────── Reshuffle panel ───────────────────
-    if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
-        st.markdown("### 🔄 Reshuffle Plan")
-        mode = st.radio("Type", ["Partial", "Full"], horizontal=True)
+if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
+    st.markdown("### 🔄 Reshuffle Plan")
+    mode = st.radio("Type", ["Partial", "Full"], horizontal=True)
 
-        # ---------- PARTIAL ----------
-        if mode == "Partial":
-            days  = st.multiselect("Days",  st.session_state.meal_plan.Day.tolist())
-            meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
-            extra = st.multiselect("Extra dislikes", df.Food.unique())
+    if mode == "Partial":
+        days = st.multiselect("Days", st.session_state.meal_plan.Day.tolist())
+        meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
+        extra = st.multiselect("Extra dislikes", df.Food.unique())
 
-            if st.button("Apply partial"):
-                prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
-                upd_dis = list(set(dislikes + extra))
+        if st.button("Apply partial"):
+            prefs = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
+            upd_dis = list(set(dislikes + extra))
 
-                # 1️⃣  exclude foods that are already in the selected (day, meal) cells
-                current_cells = {
-                    re.sub(r" \(.*?\)", "", st.session_state.meal_plan.loc[
-                        st.session_state.meal_plan.Day == d, m].iat[0]
-                    ).strip().lower()
-                    for d in days for m in meals
-                }
+            # 🍽️ Build base foods from current plan
+            base_food = {
+                re.sub(r"\s*\(.*?\)", "", f).strip().lower()
+                for col in ["Breakfast", "Lunch", "Dinner"]
+                if col in st.session_state.meal_plan.columns
+                for f in st.session_state.meal_plan[col]
+            }
 
-                # 2️⃣  seed classic plan just to harvest base-foods set
-                seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis, exclude=current_cells)
-                base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
-                              for col in ["Breakfast", "Lunch", "Dinner"] for x in seed_df[col]}
+            new = gpt_plan(base_food, upd_dis, ensure_kcal()) if use_ai else classic_plan(prefs, ensure_kcal(), upd_dis)
+            if new is not None:
+                for d in days:
+                    if d not in new.Day.values:
+                        continue
+                    oi = st.session_state.meal_plan[st.session_state.meal_plan.Day == d].index[0]
+                    ni = new[new.Day == d].index[0]
+                    for m in meals:
+                        if m in new.columns and m in st.session_state.meal_plan.columns:
+                            st.session_state.meal_plan.at[oi, m] = new.at[ni, m]
+                    if "Total Calories" in new.columns:
+                        st.session_state.meal_plan.at[oi, "Total Calories"] = new.at[ni, "Total Calories"]
 
-                # 3️⃣  build new plan (GPT or classic) while excluding current cells
-                new_plan = (
-                    gpt_plan(base_foods, upd_dis, ensure_kcal(), exclude=current_cells)
-                    if use_ai else
-                    seed_df
+                st.session_state.meal_plan.to_csv(
+                    csv_path(st.session_state.username, st.session_state.current_week), index=False
                 )
+                st.session_state.show_reshuffle = False
+                _rerun()
 
-                if new_plan is not None:
-                    for d in days:
-                        if d not in new_plan.Day.values:
-                            continue
-                        oi = st.session_state.meal_plan.loc[st.session_state.meal_plan.Day == d].index[0]
-                        ni = new_plan.loc[new_plan.Day == d].index[0]
+    else:  # Full reshuffle
+        extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
+        if st.button("Apply full"):
+            prefs = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
+            upd_dis = list(set(dislikes + extra))
 
-                        # overwrite only requested meals
-                        for m in meals:
-                            st.session_state.meal_plan.at[oi, m] = new_plan.at[ni, m]
+            # 🍽️ Build base foods from current plan
+            base_food = {
+                re.sub(r"\s*\(.*?\)", "", f).strip().lower()
+                for col in ["Breakfast", "Lunch", "Dinner"]
+                if col in st.session_state.meal_plan.columns
+                for f in st.session_state.meal_plan[col]
+            }
 
-                        # recompute row-kcal safely
-                        tot = 0
-                        for m in ["Breakfast", "Lunch", "Dinner"]:
-                            kcal_match = re.search(r"\((\d+)\s*kcal\)", str(st.session_state.meal_plan.at[oi, m]))
-                            if kcal_match:
-                                tot += int(kcal_match.group(1))
-                        st.session_state.meal_plan.at[oi, "Total Calories"] = f"{tot} kcal"
-
-                    st.session_state.meal_plan.to_csv(
-                        csv_path(st.session_state.username, st.session_state.current_week), index=False
-                    )
-                    st.session_state.show_reshuffle = False
-                    _rerun()
-
-        # ---------- FULL ----------
-        else:
-            extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
-
-            if st.button("Apply full"):
-                prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
-                upd_dis = list(set(dislikes + extra))
-
-                # seed classic  ➜ base foods set
-                seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis)
-                base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
-                              for col in ["Breakfast", "Lunch", "Dinner"] for x in seed_df[col]}
-
-                new_plan = (
-                    gpt_plan(base_foods, upd_dis, ensure_kcal())
-                    if use_ai else
-                    seed_df
-                )
-
-                if new_plan is not None:
-                    st.session_state.meal_plan = new_plan
-                    new_plan.to_csv(
-                        csv_path(st.session_state.username, st.session_state.current_week), index=False
-                    )
-                    st.session_state.show_reshuffle = False
-                    _rerun()
+            new = gpt_plan(base_food, upd_dis, ensure_kcal()) if use_ai else classic_plan(prefs, ensure_kcal(), upd_dis)
+            if new is not None:
+                st.session_state.meal_plan = new
+                new.to_csv(csv_path(st.session_state.username, st.session_state.current_week), index=False)
+                st.session_state.show_reshuffle = False
+                _rerun()
 
 
 
-        # ---------- FULL ----------
-            else:
-                extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
 
-                if st.button("Apply full"):
-                    prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
-                    upd_dis = list(set(dislikes + extra))
-
-                    # seed classic plan → collect foods for GPT
-                    seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis)
-                    base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
-                                for col in ["Breakfast","Lunch","Dinner"] for x in seed_df[col]}
-
-                    new = (
-                        gpt_plan(base_foods, upd_dis, ensure_kcal())
-                        if use_ai else
-                        seed_df
-                    )
-
-                    if new is not None:
-                        st.session_state.meal_plan = new
-                        new.to_csv(
-                            csv_path(st.session_state.username, st.session_state.current_week), index=False
-                        )
-                        st.session_state.show_reshuffle = False
-                        _rerun()
+       
 
 
 
