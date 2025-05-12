@@ -387,11 +387,12 @@ if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
             if new is not None:
                 changed = False
                 for d in days:
-                    if d not in new["Day"].values:
-                        st.warning(f"⚠️ Day {d} missing in reshuffled plan."); continue
+                    label = f"Day {d}"
+                    if label not in new["Day"].values:
+                        st.warning(f"⚠️ {label} missing in reshuffled plan."); continue
 
-                    oi = st.session_state.meal_plan[st.session_state.meal_plan.Day == d].index[0]
-                    ni = new[new["Day"] == d].index[0]
+                    oi = st.session_state.meal_plan[st.session_state.meal_plan.Day == label].index[0]
+                    ni = new[new["Day"] == label].index[0]
 
                     for m in meals:
                         if m in new.columns and m in st.session_state.meal_plan.columns:
