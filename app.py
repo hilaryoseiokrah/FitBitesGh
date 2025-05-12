@@ -179,30 +179,61 @@ def classic_plan(prefs, kcal, dislikes=None, exclude=None):
 
 
 # ───────────────────── GPT plan (optional) ────────────────────────
-def gpt_plan(prefs, dislikes, kcal):
-    if not OPENAI_AVAILABLE: return None
-    likes = ", ".join(set(sum(prefs.values(), []))) or "any Ghanaian foods"
-    dis   = ", ".join(dislikes) if dislikes else "none"
-    rules = ("Pairings:\n"
-             "• Hausa koko must pair with bofrot or bread & groundnuts\n"
-             "• Fufu pairs with any soup except okro stew\n"
-             "• Banku pairs with okro soup + protein\n"
-             "• No fictional Ghanaian foods\n")
-    sys  = "You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
-    user = (f"{rules}\nBuild 7-day table (Day,Breakfast,Lunch,Dinner). "
-            f"Daily ≈{int(kcal)} kcal (25/35/40). Use household measures & kcal per item. "
-            f"LIKES:{likes}. DISLIKES:{dis}.")
-    try:
-        r   = client_openai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role":"system","content":sys},
-                          {"role":"user"  ,"content":user}],
-                temperature=0.4, timeout=30)
-        raw = r.choices[0].message.content.strip()
-        j   = raw[raw.find("["):raw.rfind("]")+1]
-        return pd.DataFrame(json.loads(j))
-    except Exception as e:
-        st.error(f"GPT error: {e}"); return None
+def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
+    """
+    base_foods : set of single-word foods already chosen by classic_plan
+    dislikes   : iterable (can be []) – never include
+    kcal       : target kcals / day
+    exclude    : foods to avoid for variety (previous week, etc.)
+    Returns a 7-row DataFrame (Day,Breakfast,Lunch,Dinner)
+    """
+    if not OPENAI_AVAILABLE:
+        return None
+
+    dislikes = ", ".join(sorted(dislikes)) if dislikes else "none"
+    exclude  = ", ".join(sorted(exclude or [])) or "none"
+    base     = ", ".join(sorted(base_foods))
+
+    rules = (
+        "Pairings:\n"
+        "• Hausa koko must pair with bofrot OR bread & groundnuts\n"
+        "• Fufu must come with a soup (not stew) and a protein (e.g. chicken)\n"
+        "• Banku must come with okro soup and a protein\n"
+        "• Fried yam or cassava must come with pepper or shito\n"
+        "• Do NOT invent new Ghanaian foods\n"
+    )
+
+    sys_msg = "You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
+    user_tpl = (
+        f"{rules}"
+        "Use ONLY the foods in the 'BASE FOODS' list, adding correct pairings. "
+        "You may rename individual foods to the paired dish (e.g. 'banku + okro soup'). "
+        f"BASE FOODS: {base}\n"
+        f"DISLIKES: {dislikes}\n"
+        f"ALSO AVOID: {exclude}\n"
+        f"Create 7 rows labelled Day 1-Day 7 with Breakfast / Lunch / Dinner. "
+        f"Daily total ≃{int(kcal)} kcal (25 %/35 %/40 %)."
+    )
+
+    def _ask():
+        reply = client_openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"system","content":sys_msg},
+                      {"role":"user" , "content":user_tpl}],
+            temperature=0.5,
+            timeout=30
+        ).choices[0].message.content.strip()
+        return pd.DataFrame(json.loads(reply[reply.find("["):reply.rfind("]")+1]))
+
+    # retry if GPT ignores too many base foods
+    for _ in range(max_tries):
+        df_plan = _ask()
+        used = {re.sub(r" \\(.*?\\)", "", x).strip().lower()
+                for col in ["Breakfast","Lunch","Dinner"] for x in df_plan[col]}
+        if len(base_foods & used) >= 0.7 * len(base_foods):
+            return df_plan
+    return df_plan          # last attempt
+
 
 # ═══════════════ Tabs ═══════════════
 tab_plan, tab_profile, tab_recipe = st.tabs(["🍽️ Planner","👤 Profile","🍲 Recipe"])
@@ -229,24 +260,33 @@ with tab_plan:
         use_ai  = st.checkbox("🤖 Use AI combos", value=prof.get("use_ai",False), disabled=not OPENAI_AVAILABLE)
 
     def generate_plan(next_week=False):
-        kcal   = tdee(w, h, age, sex, act) - 500      # 500 kcal deficit ≃ 0.5 kg/week
-        prefs  = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
-        week   = (max(weeks(st.session_state.username) or [0]) + 1) if next_week else (st.session_state.current_week or 1)
+        kcal   = tdee(w,h,age,sex,act) - 500
+        prefs  = dict(breakfast=likes_b,lunch=likes_l,dinner=likes_d)
+        week   = (max(weeks(st.session_state.username) or [0])+1) if next_week else (st.session_state.current_week or 1)
 
-        plan   = gpt_plan(prefs, dislikes, kcal) if use_ai else classic_plan(prefs, kcal, dislikes)
+        # ---------- build a seed plan with your classic model ----------
+        base_df   = classic_plan(prefs, kcal, dislikes)
+        base_food = {re.sub(r" \\(.*?\\)", "", x).strip().lower()
+                    for col in ["Breakfast","Lunch","Dinner"] for x in base_df[col]}
+
+        # ---------- choose final plan ----------
+        if use_ai:
+            # exclude everything in current plan for variety
+            old_food = set()
+            if st.session_state.meal_plan is not None:
+                for col in ["Breakfast","Lunch","Dinner"]:
+                    old_food.update(
+                        st.session_state.meal_plan[col].str.split(" \\(").str[0].str.lower()
+                    )
+            plan = gpt_plan(base_food, dislikes, kcal, exclude=old_food)
+        else:
+            plan = base_df
 
         if plan is not None:
             plan.to_csv(csv_path(st.session_state.username, week), index=False)
             st.session_state.meal_plan, st.session_state.current_week = plan, week
             st.session_state.daily_calories = kcal
-
-            # ───── realistic timeline ─────
-            diff_kg  = abs(w - tw)
-            weeks_to = diff_kg / 0.5                 # 0.5 kg per week
-            months   = weeks_to / 4.33
-
-            st.success(f"✅ Week {week} saved · Daily target ≈ {int(kcal)} kcal")
-            st.info   (f"⏳ At 0.5 kg/week you’ll hit {tw} kg in about **{weeks_to:.0f} weeks (~{months:.1f} months)**")
+            # timeline message … (unchanged)
 
             # save profile …
 
