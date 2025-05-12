@@ -133,30 +133,49 @@ def tdee(w,h,age,sex,act):
     mult = dict(sedentary=1.2, light=1.375, moderate=1.55, active=1.725, superactive=1.9)[act]
     return (10*w + 6.25*h - 5*age + (5 if sex=="male" else -161)) * mult
 
-def classic_plan(prefs, kcal, dislikes, exclude=None):
-    exclude = set(exclude or [])
-    split   = dict(breakfast=0.25, lunch=0.35, dinner=0.4)
-    out     = []
+# ───────────────────── classic_plan (updated) ─────────────────────
+def classic_plan(prefs, kcal, dislikes=None, exclude=None):
+    """
+    Build a 7-day classic meal plan.
+      • prefs   : {"breakfast": [...], "lunch": [...], "dinner": [...]}
+      • kcal    : daily-kcal goal
+      • dislikes: list / set / None  → foods user never wants
+      • exclude : set  / None        → extra foods to avoid just in THIS run
+    The user’s dislike list is never modified in-place.
+    """
+    dislikes_set = set(dislikes or [])          # safe if [] or None
+    exclude      = set(exclude   or [])
+    split        = dict(breakfast=0.25, lunch=0.35, dinner=0.4)   # kcal fractions
+    rows         = []
 
     for d in range(1, 8):
-        row, tot = {"Day": f"Day {d}"}, 0
-        for meal, f in split.items():
+        row, total = {"Day": f"Day {d}"}, 0
+
+        for meal, frac in split.items():
+            # ---------- build candidate pool ----------
             opts = []
-            for s in prefs.get(meal, []):
-                opts.extend(similar(s, exc=dislikes | exclude))
+            for liked in prefs.get(meal, []):
+                opts.extend(similar(liked, exc=dislikes_set | exclude))
             if not opts:
-                opts = list(set(df.Food.unique()) - set(dislikes) - exclude)
-            if not opts:
-                pick, meal_kcal = "No food", 0
+                opts = list(set(df.Food) - dislikes_set - exclude)
+
+            # ---------- select a dish ----------
+            if opts:
+                pick      = np.random.choice(opts)
+                meal_kcal = kcal * frac
+                exclude.add(pick)               # avoid repeats within this plan
             else:
-                pick           = np.random.choice(opts)
-                meal_kcal      = kcal * f
-                exclude.add(pick)                   # prevent immediate reuse
+                pick, meal_kcal = "No food", 0
+
             row[meal.capitalize()] = f"{pick} ({meal_kcal:.0f} kcal)"
-            tot += meal_kcal
-        row["Total Calories"] = f"{tot:.0f} kcal"
-        out.append(row)
-    return pd.DataFrame(out)
+            total += meal_kcal
+
+        row["Total Calories"] = f"{total:.0f} kcal"
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+# ──────────────────────────────────────────────────────────────────
+
 
 
 # ───────────────────── GPT plan (optional) ────────────────────────
