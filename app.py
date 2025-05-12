@@ -326,45 +326,39 @@ with tab_plan:
 
     # Reshuffle helpers
         
-    def ensure_kcal():         
-        return st.session_state.daily_calories or (tdee(w,h,age,sex,act) - 500)
+        # ─────────────────── Reshuffle panel ───────────────────
+    def ensure_kcal():
+        return st.session_state.daily_calories or (tdee(w, h, age, sex, act) - 500)
 
     if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
         st.markdown("### 🔄 Reshuffle Plan")
         mode = st.radio("Type", ["Partial", "Full"], horizontal=True)
 
-        # ---------- PARTIAL RESHUFFLE ----------
+        # ---------- PARTIAL ----------
         if mode == "Partial":
             days  = st.multiselect("Days",  st.session_state.meal_plan.Day.tolist())
             meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
             extra = st.multiselect("Extra dislikes", df.Food.unique())
 
             if st.button("Apply partial"):
-                # foods currently present in the selected (day, meal) cells
-                exclude = set()
-                for d in days:
-                    for m in meals:
-                        current_food = (
-                            st.session_state.meal_plan
-                            .loc[st.session_state.meal_plan.Day == d, m]
-                            .iat[0]
-                            .split(" (")[0]
-                        )
-                        exclude.add(current_food)
-
                 prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
                 upd_dis = list(set(dislikes + extra))
 
+                # seed classic plan → collect foods for GPT
+                seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis)
+                base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
+                              for col in ["Breakfast","Lunch","Dinner"] for x in seed_df[col]}
+
+                # run GPT or fallback to seed_df
                 new = (
-                    gpt_plan(prefs, upd_dis, ensure_kcal())
+                    gpt_plan(base_foods, upd_dis, ensure_kcal())
                     if use_ai else
-                    classic_plan(prefs, ensure_kcal(), upd_dis, exclude=exclude)
+                    seed_df
                 )
 
                 if new is not None:
                     for d in days:
-                        if d not in new.Day.values:
-                            continue
+                        if d not in new.Day.values: continue
                         oi = st.session_state.meal_plan[st.session_state.meal_plan.Day == d].index[0]
                         ni = new[new.Day == d].index[0]
                         for m in meals:
@@ -377,28 +371,23 @@ with tab_plan:
                     st.session_state.show_reshuffle = False
                     _rerun()
 
-        # ---------- FULL RESHUFFLE ----------
+        # ---------- FULL ----------
         else:
             extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
 
             if st.button("Apply full"):
-                # exclude EVERY food in the current week to guarantee freshness
-                exclude = set()
-                for m in ["Breakfast", "Lunch", "Dinner"]:
-                    exclude.update(
-                        st.session_state.meal_plan[m]
-                        .str.split(" \\(")
-                        .str[0]
-                        .tolist()
-                    )
-
                 prefs   = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
                 upd_dis = list(set(dislikes + extra))
 
+                # seed classic plan → collect foods for GPT
+                seed_df    = classic_plan(prefs, ensure_kcal(), upd_dis)
+                base_foods = {re.sub(r" \(.*?\)", "", x).strip().lower()
+                              for col in ["Breakfast","Lunch","Dinner"] for x in seed_df[col]}
+
                 new = (
-                    gpt_plan(prefs, upd_dis, ensure_kcal())
+                    gpt_plan(base_foods, upd_dis, ensure_kcal())
                     if use_ai else
-                    classic_plan(prefs, ensure_kcal(), upd_dis, exclude=exclude)
+                    seed_df
                 )
 
                 if new is not None:
@@ -408,6 +397,7 @@ with tab_plan:
                     )
                     st.session_state.show_reshuffle = False
                     _rerun()
+
 
 
 # ─────────────── Profile tab ───────────────
