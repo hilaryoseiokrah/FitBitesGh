@@ -284,44 +284,53 @@ if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
 
 
     if mode == "Partial":
-        days = st.multiselect("Days", st.session_state.meal_plan["Day"].tolist())
-        meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
-        extra = st.multiselect("Extra dislikes", df.Food.unique())
+    days = st.multiselect("Days", st.session_state.meal_plan["Day"].tolist())
+    meals = st.multiselect("Meals", ["Breakfast", "Lunch", "Dinner"])
+    extra = st.multiselect("Extra dislikes", df.Food.unique())
 
-        if st.button("Apply partial"):
-            prefs = dict(breakfast=likes_b, lunch=likes_l, dinner=likes_d)
-            upd_dis = list(set(dislikes + extra))
-            base_food = {
-                re.sub(r"\s*\(.*?\)", "", f).strip().lower()
-                for col in ["Breakfast", "Lunch", "Dinner"]
-                if col in st.session_state.meal_plan.columns
-                for f in st.session_state.meal_plan[col]
-            }
+    if st.button("Apply partial"):
+        prof = st.session_state.profile
+        kcal = ensure_kcal()
+        upd_dis = list(set(prof["dislikes"] + extra))
+        prefs = dict(breakfast=prof["likes_b"], lunch=prof["likes_l"], dinner=prof["likes_d"])
+        base_food = set()
 
-            new = gpt_plan(base_food, upd_dis, ensure_kcal())
-            if new is not None:
-                changed = False
-                for d in days:
-                    label = f"Day {d}"
-                    if label not in new["Day"].values: continue
-                    oi = st.session_state.meal_plan[st.session_state.meal_plan.Day == label].index[0]
-                    ni = new[new["Day"] == label].index[0]
-                    for m in meals:
-                        if m in new.columns:
-                            old_val = st.session_state.meal_plan.at[oi, m]
-                            new_val = new.at[ni, m]
-                            if old_val != new_val:
-                                st.session_state.meal_plan.at[oi, m] = new_val
-                                changed = True
-                    if "Total Calories" in new.columns:
-                        st.session_state.meal_plan.at[oi, "Total Calories"] = new.at[ni, "Total Calories"]
+        # 🧠 Use ANN to gather relevant foods based on user preferences
+        for meal in ["breakfast", "lunch", "dinner"]:
+            for like in prefs[meal]:
+                base_food.update(similar(like, exc=set(upd_dis)))
 
-                if changed:
-                    st.session_state.meal_plan.to_csv(csv_path(st.session_state.username, st.session_state.current_week), index=False)
-                    st.session_state.show_reshuffle = False
-                    _rerun()
-                else:
-                    st.warning("⚠️ Meals were not changed. Try adjusting preferences.")
+        # ✨ Call GPT to build new 7-day plan using these ANN-recommended foods
+        new_plan = gpt_plan(base_food, upd_dis, kcal)
+
+        if new_plan is not None:
+            changed = False
+            for d in days:
+                label = f"Day {d}"
+                oi = st.session_state.meal_plan[st.session_state.meal_plan["Day"] == label].index[0]
+                ni = new_plan[new_plan["Day"] == label].index[0]
+
+                for m in meals:
+                    if m in new_plan.columns and m in st.session_state.meal_plan.columns:
+                        old_val = st.session_state.meal_plan.at[oi, m]
+                        new_val = new_plan.at[ni, m]
+                        if old_val != new_val:
+                            st.session_state.meal_plan.at[oi, m] = new_val
+                            changed = True
+
+                # ✅ Update total calories if available
+                if "Total Calories" in new_plan.columns:
+                    st.session_state.meal_plan.at[oi, "Total Calories"] = new_plan.at[ni, "Total Calories"]
+
+            if changed:
+                st.session_state.meal_plan.to_csv(csv_path(st.session_state.username, st.session_state.current_week), index=False)
+                st.session_state.show_reshuffle = False
+                _rerun()
+            else:
+                st.warning("⚠️ Meals were not changed. Try adjusting preferences.")
+        else:
+            st.error("⚠️ GPT plan generation failed.")
+
     else:
         extra = st.multiselect("Extra dislikes", df.Food.unique(), key="full_dis")
         if st.button("Apply full"):
