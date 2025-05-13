@@ -262,7 +262,11 @@ if st.session_state.show_reshuffle and st.session_state.meal_plan is not None:
     mode = st.radio("Type", ["Partial", "Full"], horizontal=True)
 
     def ensure_kcal():
-        return st.session_state.daily_calories or (tdee(w, h, age, sex, act) - 500)
+        prof = st.session_state.profile
+        return st.session_state.daily_calories or (
+            tdee(prof["weight"], prof["height"], prof["age"], prof["sex"], prof["activity"]) - 500
+        )
+
 
     if mode == "Partial":
         days = st.multiselect("Days", st.session_state.meal_plan["Day"].tolist())
