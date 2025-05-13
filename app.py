@@ -155,8 +155,10 @@ def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
         "• Banku must come with okro soup and protein like fish or snails\n"
         "• Fried yam/cassava must come with pepper or shito\n"
         "• Akple must go with okro soup\n"
+        "• Rice must go with any form of stew\n"
         "• Use realistic household measures (e.g. 1 ladle, 1 cup)\n"
-        "• Respect the provided calorie values"
+        "•Respond with ONLY a JSON array of 7 days. Do not include any explanation or notes.\n"
+        "• Respect the provided calorie values dont conjure any values"
     )
 
     sys_msg = "You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
@@ -164,28 +166,41 @@ def gpt_plan(base_foods, dislikes, kcal, exclude=None, max_tries=3):
         f"{rules}\n\nBASE FOODS: {base_txt}\nDISLIKES: {dislikes_txt}\nAVOID: {avoid_txt}\n"
         f"CALORIE VALUES (per 100g): {cal_text}\n"
         f"Build a 7-day table with Breakfast, Lunch, Dinner (~{int(kcal)} kcal/day)\n"
-        "Each meal should show name and kcal. Example: 'banku + okro soup (500 kcal)'"
+        "Each meal should show name and caloric content. Example: 'banku + okro soup +chicken(600kcal)'"
     )
 
     def _ask_gpt():
         reply = client_openai.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_tpl}],
-            temperature=0.5, timeout=30
+            messages=[
+                {"role": "system", "content": sys_msg},
+                {"role": "user", "content": user_tpl}
+            ],
+            temperature=0.5,
+            timeout=30
         ).choices[0].message.content.strip()
 
-        df_plan = pd.DataFrame(json.loads(reply[reply.find("["): reply.rfind("]") + 1]))
-        std_cols = {"breakfast": "Breakfast", "lunch": "Lunch", "dinner": "Dinner", "day": "Day"}
-        df_plan = df_plan.rename(columns={c: std_cols.get(c.lower().strip(), c) for c in df_plan.columns})
-        used = {re.sub(r" \(.*?\)", "", x).strip().lower() for c in ["Breakfast", "Lunch", "Dinner"] if c in df_plan.columns for x in df_plan[c]}
-        return df_plan, used
+        # 🧪 Debugging: Show raw GPT reply
+        if "```" in reply:
+            reply = reply.replace("```json", "").replace("```", "").strip()
 
-    for _ in range(max_tries):
-        df_out, used_set = _ask_gpt()
-        if not base_foods or len(base_foods & used_set) >= 0.7 * len(base_foods):
-            return df_out
+        try:
+            json_part = reply[reply.find("["): reply.rfind("]") + 1]
+            df_plan = pd.DataFrame(json.loads(json_part))
 
-    return df_out  # fallback after retries
+            std_cols = {"breakfast": "Breakfast", "lunch": "Lunch", "dinner": "Dinner", "day": "Day"}
+            df_plan = df_plan.rename(columns={c: std_cols.get(c.lower().strip(), c) for c in df_plan.columns})
+
+            cols_in = [c for c in ["Breakfast", "Lunch", "Dinner"] if c in df_plan.columns]
+            used = {re.sub(r" \(.*?\)", "", x).strip().lower() for c in cols_in for x in df_plan[c]}
+
+            return df_plan, used
+
+        except Exception as e:
+            st.error("⚠️ Failed to parse GPT output. Try reshuffling again or contact admin.")
+            st.code(reply)  # show GPT's actual reply to help you debug
+            return None, set()
+
 # ═══════════════ Tabs ═══════════════
 tab_plan, tab_profile, tab_recipe = st.tabs(["🍽️ Planner","👤 Profile","🍲 Recipe"])
 
