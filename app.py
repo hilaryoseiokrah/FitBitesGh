@@ -132,7 +132,11 @@ def gpt_plan(prefs,dislikes,kcal):
     rules=("Pairings:\n"
            "• Hausa koko or koko must go with bofrot or bread & groundnuts\n"
            "• Fufu goes with any soup except okro (no stews); may include chicken, snails or crabs\n"
-           "• Banku goes with okro soup plus any protein\n")
+           "Greek yoghurt goes with banana\n"
+           "There is no such thing as snail soup if youre not sure search database for food .Dont conjure foods\n"
+           "Yam and Cassava goes with stew\n"
+           "Rice goes with stews \n"
+           "• Banku, Akpler goes with okro soup plus any protein\n")
     sys="You are a Ghanaian dietitian. Reply ONLY with minified JSON list."
     user=(f"{rules}\nBuild 7-day table (Day,Breakfast,Lunch,Dinner). "
           f"Daily ≈{int(kcal)} kcal (25/35/40). Use household measures & kcal per item. "
@@ -301,7 +305,7 @@ with tab_recipe:
         dish=st.selectbox("Choose a dish",sorted(options))
         if st.button("Generate recipe"):
             kcal=ensure_kcal()//3
-            with st.spinner("GPT cooking..."):
+            with st.spinner("Chef cooking..."):
                 rec=recipe_llm(dish,kcal)
             if rec:
                 st.markdown(rec)
