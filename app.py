@@ -1,209 +1,243 @@
 ###############################################################################
-# FitBites – Ghana-centric AI Meal-Planner
-# Rev. 2025-05-21  •  BMI/TDEE, ANN recs, GPT combos, reshuffles, profile, recipes
+# FitBites – full app  (2025-05-12)
+# • Login / Register
+# • Profile page (info + picture + plan history)
+# • Weekly meal plans (AI or classic)  + Reshuffles + CSV download
+# • AI Recipe Maker
 ###############################################################################
 
-import os, json, datetime as dt, random, re
-from pathlib import Path
+import os, glob, io, json, datetime
+os.environ["STREAMLIT_WATCHER_TYPE"] = "poll"
 
 import streamlit as st
-import pandas as pd
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
+import pandas as pd, numpy as np
+import torch, torch.nn as nn, torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ─────────────────────── OpenAI (optional) ───────────────────────────
+# ───────── OpenAI optional ─────────
+OPENAI_AVAILABLE = False
 try:
     from openai import OpenAI
-    client_openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY",
-                                             st.secrets.get("OPENAI_API_KEY", "")))
-    OPENAI_AVAILABLE = True
+    _KEY = os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
+    client_openai = OpenAI(api_key=_KEY) if _KEY else None
+    OPENAI_AVAILABLE = bool(client_openai)
 except Exception:
-    client_openai, OPENAI_AVAILABLE = None, False
+    client_openai = None
 
-# ─────────────────────────── Paths ───────────────────────────────────
-DATA      = Path("data")
-PROFILES  = DATA / "profiles"
-PICS      = DATA / "profile_pics"
-PLANS     = DATA / "mealplans"
-for p in (DATA, PROFILES, PICS, PLANS):
-    p.mkdir(parents=True, exist_ok=True)
+def _rerun(): st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
 
-USERS_CSV = DATA / "users.csv"
+# ───────── Folders ─────────
+DATA_DIR      = "data"
+PROFILE_DIR   = f"{DATA_DIR}/profiles"
+PIC_DIR       = f"{DATA_DIR}/profile_pics"
+MEALPLAN_DIR  = f"{DATA_DIR}/mealplans"
+for d in (DATA_DIR, PROFILE_DIR, PIC_DIR, MEALPLAN_DIR): os.makedirs(d, exist_ok=True)
 
-# ──────────────────── Auth helpers ───────────────────────────────────
+# ───────── Auth utilities ─────────
+USER_FILE = f"{DATA_DIR}/users.csv"
+def users_df(): return pd.read_csv(USER_FILE) if os.path.isfile(USER_FILE) else pd.DataFrame(columns=["username","password"])
+def save_user(u,p):
+    df=users_df()
+    if u in df.username.values: return False
+    pd.concat([df,pd.DataFrame([[u,p]],columns=df.columns)]).to_csv(USER_FILE,index=False); return True
+def valid(u,p): return not users_df()[(users_df().username==u)&(users_df().password==p)].empty
 
-def _users_df() -> pd.DataFrame:
-    """Always return a DataFrame with username & password as strings."""
-    if USERS_CSV.exists():
-        return pd.read_csv(USERS_CSV, dtype=str)   # ← force str
-    return pd.DataFrame(columns=["username", "password"], dtype=str)
+# ───────── Profile utilities ─────────
+def prof_path(u): return f"{PROFILE_DIR}/{u}.json"
+def load_prof(u):
+    if os.path.isfile(prof_path(u)): return json.load(open(prof_path(u)))
+    return dict(weight=90,height=160,age=25,sex="female",activity="sedentary",
+                target_weight=75,likes_b=[],likes_l=[],likes_d=[],
+                dislikes=[],use_ai=False,last_updated=str(datetime.date.today()))
+def save_prof(u,data): json.dump(data,open(prof_path(u),"w"),indent=2)
+def pic_path(u): return f"{PIC_DIR}/{u}.png"
 
-def register_user(username: str, password: str) -> bool:
-    df = _users_df()
-    uname = username.strip().lower()               # ← store lowercase
-    if uname in df.username.str.strip().str.lower().values:
-        return False                               # already exists
-    df.loc[len(df)] = [uname, password]
-    df.to_csv(USERS_CSV, index=False, header=True)
-    return True
+# ───────── Session defaults ─────────
+for k,v in dict(logged_in=False,username="",profile={},meal_plan=None,
+                current_week=None,daily_calories=None).items():
+    st.session_state.setdefault(k,v)
 
-def authenticate(username: str, password: str) -> bool:
-    df = _users_df()
-    uname = username.strip().lower()               # ← compare lowercase
-    mask = (df.username.str.strip().str.lower() == uname) & (df.password == password)
-    return mask.any()
+st.set_page_config(page_title="FitBites – AI Ghanaian Meal Plans", layout="wide")
 
-# ───────────────── Profile helpers ──────────────────────────────────
-def profile_path(u):   return PROFILES / f"{u}.json"
-def picture_path(u):   return PICS / f"{u}.png"
-def plan_path(u, w):   return PLANS / f"{u}_week{w}.csv"
-
-def load_profile(u):
-    if profile_path(u).exists():
-        return json.loads(profile_path(u).read_text())
-    return dict(weight=90, height=160, age=25, sex="female",
-                activity="sedentary", target_weight=75,
-                likes_b=[], likes_l=[], likes_d=[], dislikes=[],
-                use_ai=False, last_updated=str(dt.date.today()))
-
-def save_profile(u, obj): profile_path(u).write_text(json.dumps(obj, indent=2))
-
-def existing_weeks(u):
-    return sorted(int(m.group(1)) for f in PLANS.glob(f"{u}_week*.csv")
-                  if (m := re.search(r"week(\d+)", f.name)))
-
-# ─────────────────── BMI / TDEE helpers ─────────────────────────────
-def bmi(w, h_cm): return w / (h_cm/100)**2
-def tdee_msj(w, h, age, sex, act):
-    base = 10*w + 6.25*h - 5*age + (5 if sex == "male" else -161)
-    mult = dict(sedentary=1.2, light=1.375, moderate=1.55,
-                active=1.725, superactive=1.9)[act]
-    return base * mult
-
-SAFE_KG_PER_WEEK = 0.75
-def weeks_to_goal(cur, tgt): return abs(cur - tgt) / SAFE_KG_PER_WEEK
-
-# ─────────────── Load food & build embeddings ───────────────────────
-@st.cache_data(show_spinner=False)
-def load_food():
-    df = pd.read_csv("gh_food_nutritional_values.csv")
-    df["Food"] = df["Food"].str.strip().str.lower()
-    cols = ["Protein(g)", "Fat(g)", "Carbs(g)", "Calories(100g)",
-            "Water(g)", "SFA(100g)", "MUFA(100g)", "PUFA(100g)"]
-    df[cols] = df[cols].fillna(df[cols].mean())
-    return df, cols
-FOODS_DF, NUTR_COLS = load_food()
-
-class AE(nn.Module):
-    def __init__(self, d):
-        super().__init__()
-        self.e = nn.Sequential(nn.Linear(d, 32), nn.ReLU(), nn.Linear(32, 8))
-        self.d = nn.Sequential(nn.Linear(8, 32), nn.ReLU(), nn.Linear(32, d))
-    def forward(self, x): z = self.e(x); return z, self.d(z)
-
-@st.cache_resource(show_spinner=False)
-def build_embeddings(mat):
-    torch.manual_seed(7)
-    net = AE(mat.shape[1]); opt = optim.Adam(net.parameters(), 1e-3)
-    loss = nn.MSELoss(); t = torch.tensor(mat, dtype=torch.float32)
-    for _ in range(300):
-        opt.zero_grad(); z, out = net(t); loss(out, t).backward(); opt.step()
-    with torch.no_grad(): z, _ = net(t); return z.numpy()
-EMB = build_embeddings(StandardScaler().fit_transform(FOODS_DF[NUTR_COLS]))
-
-def top_similar(food, k=5, exclude=None):
-    exclude = exclude or []
-    idx = FOODS_DF.index[FOODS_DF.Food == food]
-    if idx.empty: return []
-    sims = cosine_similarity(EMB[idx[0]].reshape(1, -1), EMB).ravel()
-    out = []
-    for i in sims.argsort()[::-1]:
-        name = FOODS_DF.iloc[i].Food
-        if name != food and name not in exclude:
-            out.append(name)
-        if len(out) == k: break
-    return out
-
-# ────────────────────────── Streamlit UI ───────────────────────────
-st.set_page_config("FitBites – AI Ghanaian Meal Plans", layout="wide")
-
-if "state" not in st.session_state:
-    st.session_state.state = dict(
-        logged=False, user="", profile={},
-        meal_plan=None, week=None, daily_k=None)
-S = st.session_state.state
-
-# ─────────────────── Login / Register ───────────────────────────────
-if not S["logged"]:
-    st.title("🔐 FitBites Login")
-    login_tab, reg_tab = st.tabs(("Login", "Register"))
-
-    with login_tab:
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
+# ───────── Login / Register ─────────
+if not st.session_state.logged_in:
+    st.title("🔐 Login to FitBites")
+    t1,t2=st.tabs(["Login","Register"])
+    with t1:
+        u=st.text_input("Username")
+        p=st.text_input("Password",type="password")
         if st.button("Login"):
-            if authenticate(u, p):
-                S.update(dict(logged=True, user=u, profile=load_profile(u)))
-                st.rerun()
-            else:
-                st.error("Incorrect username/password")
-
-    with reg_tab:
-        nu  = st.text_input("Choose username")
-        npw = st.text_input("Choose password", type="password")
+            if valid(u,p):
+                st.session_state.update(logged_in=True,username=u,profile=load_prof(u))
+                _rerun()
+            else: st.error("Invalid credentials")
+    with t2:
+        nu=st.text_input("New username"); npw=st.text_input("New password",type="password")
         if st.button("Create account"):
-            ok = register_user(nu, npw)
-            st.success("Account created") if ok else st.warning("User exists")
-
+            st.success("Account created! Go to Login.") if save_user(nu,npw) else st.warning("Username exists")
     st.stop()
 
-# ───────────── Sidebar – profile inputs ─────────────────────────────
+# ───────── Logout button ─────────
 with st.sidebar:
-    st.subheader(f"Hi, {S['user'].title()}")
-    P = S["profile"]
-    weight = st.number_input("Weight (kg)", 30., 200., P["weight"], 0.1)
-    target = st.number_input("Target (kg)", 30., 200., P["target_weight"], 0.1)
-    height = st.number_input("Height (cm)", 120., 250., P["height"], 0.1)
-    age    = st.number_input("Age", 10, 100, P["age"], 1)
-    sex    = st.selectbox("Sex", ["female", "male"],
-                          0 if P["sex"] == "female" else 1)
-    activity = st.selectbox("Activity", ["sedentary","light","moderate",
-                                         "active","superactive"],
-                            ["sedentary","light","moderate","active",
-                             "superactive"].index(P["activity"]))
-    st.markdown("---")
-    st.subheader("Meal preferences")
-    likes_b = st.multiselect("Breakfast", FOODS_DF.Food, P["likes_b"])
-    likes_l = st.multiselect("Lunch",     FOODS_DF.Food, P["likes_l"])
-    likes_d = st.multiselect("Dinner",    FOODS_DF.Food, P["likes_d"])
-    dislikes= st.multiselect("Dislikes",  FOODS_DF.Food, P["dislikes"])
-    use_ai  = st.checkbox("Use GPT combos", P["use_ai"], disabled=not OPENAI_AVAILABLE)
-
-    if st.button("Save profile"):
-        P.update(weight=weight, height=height, age=age, sex=sex,
-                 activity=activity, target_weight=target,
-                 likes_b=likes_b, likes_l=likes_l, likes_d=likes_d,
-                 dislikes=dislikes, use_ai=use_ai,
-                 last_updated=str(dt.date.today()))
-        save_profile(S["user"], P)
-        st.success("Profile saved")
-
     if st.button("🚪 Log out"):
-        st.session_state.clear(); st.rerun()
+        st.session_state.clear(); st.session_state.logged_in=False; _rerun()
 
-# ────────────── Live metrics banner ────────────────────────────────
-col1, col2, col3 = st.columns(3)
-bmi_now = bmi(weight, height)
-tdee = tdee_msj(weight, height, age, sex, activity)
-daily_k = tdee - 500; S["daily_k"] = daily_k
-weeks_goal = weeks_to_goal(weight, target)
-col1.metric("BMI", f"{bmi_now:.1f}")
-col2.metric("TDEE", f"{int(tdee)} kcal/d")
-col3.metric("Time to goal", f"{int(weeks_goal)} weeks" if weeks_goal > 1 else "≈1 week")
-st.divider()
+# ───────── Food data & embeddings ─────────
+@st.cache_data
+def load_food():
+    df=pd.read_csv("gh_food_nutritional_values.csv"); df.Food=df.Food.str.strip().str.lower()
+    cols=["Protein(g)","Fat(g)","Carbs(g)","Calories(100g)","Water(g)","SFA(100g)","MUFA(100g)","PUFA(100g)"]
+    df[cols]=df[cols].fillna(df[cols].mean()); return df,cols
+df,ncols=load_food()
 
+class AE(nn.Module):
+    def __init__(s,d): super().__init__(); s.e=nn.Sequential(nn.Linear(d,32),nn.ReLU(),nn.Linear(32,8)); s.d=nn.Sequential(nn.Linear(8,32),nn.ReLU(),nn.Linear(32,d))
+    def forward(s,x): z=s.e(x); return z,s.d(z)
+@st.cache_resource
+def embed(mat):
+    net=AE(mat.shape[1]); opt=optim.Adam(net.parameters(),1e-3); loss=nn.MSELoss(); t=torch.tensor(mat,dtype=torch.float32)
+    for _ in range(200): opt.zero_grad(); z,out=net(t); loss(out,t).backward(); opt.step()
+    with torch.no_grad(): z,_=net(t); return z.numpy()
+emb=embed(StandardScaler().fit_transform(df[ncols]))
+def similar(f,k=5,exc=None):
+    exc=exc or []; idx=df.index[df.Food==f][0]
+    sims=cosine_similarity(emb[idx].reshape(1,-1),emb).ravel()
+    return [df.iloc[i].Food for i in sims.argsort()[::-1] if df.iloc[i].Food not in exc and df.iloc[i].Food!=f][:k]
 
+# ───────── Plan builders & recipe LLM ─────────
+def calc_tdee(w,h,a,sex,act):
+    mult=dict(sedentary=1.2,light=1.375,moderate=1.55,active=1.725,superactive=1.9)[act]
+    return (10*w+6.25*h-5*a+(5 if sex=="male" else -161))*mult
+def classic_plan(prefs,kcal,dislikes):
+    rows=[]; split=dict(breakfast=0.25,lunch=0.35,dinner=0.4)
+    for d in range(1,8):
+        row={"Day":f"Day {d}"}; tot=0
+        for meal,f in split.items():
+            opts=[]; [opts.extend(similar(s,exc=dislikes)) for s in prefs.get(meal,[])]
+            if not opts: opts=list(set(df.Food.sample(5))-set(dislikes))
+            pick=np.random.choice(opts); cal100=df.loc[df.Food==pick,"Calories(100g)"].iat[0]
+            g=kcal*f/cal100*100; row[meal.capitalize()]=f"{pick} ({g:.0f}g)"; tot+=g
+        row["Total Portion (g)"]=f"{tot:.0f}g"; rows.append(row)
+    return pd.DataFrame(rows)
+def gpt_plan(prefs,dislikes,kcal):
+    if not OPENAI_AVAILABLE: return None
+    likes=", ".join(set(sum(prefs.values(),[]))) or "any Ghanaian foods"
+    dis=", ".join(dislikes) if dislikes else "none"
+    prompt=f"You are a Ghanaian dietitian. Make 7-day JSON table (Day, Breakfast, Lunch, Dinner) using Ghanaian household measures. Daily ≈{int(kcal)} kcal (25/35/40). LIKES:{likes}. DISLIKES:{dis}. Include kcal in parentheses."
+    try:
+        r=client_openai.chat.completions.create(model="gpt-4o-mini",messages=[{"role":"user","content":prompt}],temperature=0.7,timeout=30)
+        return pd.read_json(io.StringIO(r.choices[0].message.content.strip()))
+    except Exception as e: st.error(e); return None
+def recipe_llm(ing,cui):
+    if not OPENAI_AVAILABLE: return None
+    sys="You are a recipe dictionary. Only respond with recipes ..."
+    user=f"Ingredients: {ing}. Cuisine: {cui}."
+    try:
+        r=client_openai.chat.completions.create(model="gpt-4o-mini",
+            messages=[{"role":"system","content":sys},{"role":"user","content":user}],
+            temperature=0.7,timeout=30)
+        return r.choices[0].message.content.strip()
+    except Exception as e: st.error(e); return None
+
+# ───────── File helpers ─────────
+def ppath(u,w): return f"{MEALPLAN_DIR}/{u}_week{w}.csv"
+def weeks(u): return [int(f.split("week")[-1].split(".")[0]) for f in glob.glob(f"{MEALPLAN_DIR}/{u}_week*.csv")]
+
+# ───────── Tabs ─────────
+tab_plan, tab_profile, tab_recipe = st.tabs(["🍽️ Planner","👤 Profile","🍲 Recipe"])
+
+# ===== Planner =====
+with tab_plan:
+    st.header("Weekly Meal Planner")
+    prof=st.session_state.profile
+    with st.sidebar:
+        st.subheader("Details")
+        w = st.number_input("Weight kg", 30.0, 200.0, float(prof["weight"]), step=0.1)
+        h = st.number_input("Height cm", 120.0, 250.0, float(prof["height"]), step=0.1)
+        age = st.number_input("Age", 10, 100, int(prof["age"]), step=1)
+        sex = st.selectbox("Sex",["female","male"],index=0 if prof["sex"]=="female" else 1)
+        act = st.selectbox("Activity",["sedentary","light","moderate","active","superactive"],
+                           index=["sedentary","light","moderate","active","superactive"].index(prof["activity"]))
+
+        st.subheader("Likes")
+        likes_b = st.multiselect("Breakfast", df.Food.unique(), default=prof.get("likes_b",[]))
+        likes_l = st.multiselect("Lunch",     df.Food.unique(), default=prof.get("likes_l",[]))
+        likes_d = st.multiselect("Dinner",    df.Food.unique(), default=prof.get("likes_d",[]))
+
+        st.subheader("Dislikes")
+        dislikes = st.multiselect("Dislikes", df.Food.unique(), default=prof.get("dislikes",[]))
+
+        use_ai = st.checkbox("🤖 AI combos", value=prof.get("use_ai",False), disabled=not OPENAI_AVAILABLE)
+
+        def save_plan(for_next=False):
+            st.session_state.daily_calories = calc_tdee(w,h,age,sex,act)-500
+            prefs=dict(breakfast=likes_b,lunch=likes_l,dinner=likes_d)
+            dis=dislikes
+            week = (max(weeks(st.session_state.username))+1 if weeks(st.session_state.username) else 1) if for_next else \
+                   (st.session_state.current_week or 1)
+            plan = gpt_plan(prefs,dis,st.session_state.daily_calories) if use_ai else classic_plan(prefs,st.session_state.daily_calories,dis)
+            if plan is not None:
+                plan.to_csv(ppath(st.session_state.username,week),index=False)
+                st.session_state.meal_plan, st.session_state.current_week = plan, week
+                st.success(f"Week {week} saved")
+            prof.update(dict(weight=w,height=h,age=age,sex=sex,activity=act,
+                             likes_b=likes_b,likes_l=likes_l,likes_d=likes_d,
+                             dislikes=dis,use_ai=use_ai,last_updated=str(datetime.date.today())))
+            save_prof(st.session_state.username,prof)
+            st.session_state.profile=prof
+
+        if st.button("✨ Generate / Update plan"): save_plan()
+        if st.button("➕ Next week"): save_plan(for_next=True)
+
+    if st.session_state.meal_plan is not None:
+        st.selectbox("📆 Week",weeks(st.session_state.username),
+                     index=weeks(st.session_state.username).index(st.session_state.current_week),
+                     key="week_sel",on_change=lambda: st.session_state.update(
+                         meal_plan=pd.read_csv(ppath(st.session_state.username,st.session_state.week_sel)),
+                         current_week=st.session_state.week_sel))
+        st.dataframe(st.session_state.meal_plan, use_container_width=True)
+        st.download_button("⬇️ CSV",st.session_state.meal_plan.to_csv(index=False).encode(),
+                           file_name=f"mealplan_week{st.session_state.current_week}.csv")
+
+# ===== Profile =====
+with tab_profile:
+    st.header("Profile")
+    col1,col2=st.columns([1,3])
+    with col1:
+        if os.path.isfile(pic_path(st.session_state.username)):
+            st.image(pic_path(st.session_state.username),width=150)
+        up=st.file_uploader("Upload photo",type=["png","jpg","jpeg"])
+        if up:
+            open(pic_path(st.session_state.username),"wb").write(up.getbuffer())
+            st.success("Saved. Refresh.")
+    with col2:
+        p=st.session_state.profile
+        st.markdown(f"""
+* **Weight:** {p['weight']} kg  
+* **Height:** {p['height']} cm  
+* **Target weight:** {p['target_weight']} kg  
+* **Age:** {p['age']}  
+* **Sex:** {p['sex'].title()}  
+* **Activity:** {p['activity'].title()}  
+* **Last updated:** {p['last_updated']}
+""")
+    st.divider(); st.subheader("Saved plans")
+    for w in weeks(st.session_state.username):
+        with st.expander(f"Week {w}"):
+            st.download_button("Download",open(ppath(st.session_state.username,w),"rb").read(),
+                               file_name=f"mealplan_week{w}.csv",key=f"d{w}")
+
+# ===== Recipe =====
+with tab_recipe:
+    st.header("AI Recipe Maker")
+    ing=st.text_area("Ingredients (comma-separated)")
+    cui=st.text_input("Cuisine")
+    if st.button("Generate recipe"):
+        if not ing.strip() or not cui.strip(): st.warning("Fill both fields.")
+        else:
+            with st.spinner("GPT cooking…"):
+                r=recipe_llm(ing,cui)
+            if r:
+                st.markdown(r); st.download_button("Save txt",r.encode(),
+                                                   file_name="recipe.txt",mime="text/plain")
