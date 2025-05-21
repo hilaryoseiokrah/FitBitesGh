@@ -182,13 +182,16 @@ if not S["logged_in"]:
                 st.error("Incorrect username/password")
 
     with tab_reg:
-        nu = st.text_input("Choose username")
+        nu  = st.text_input("Choose username")
         npw = st.text_input("Choose password", type="password")
+    
         if st.button("Create account"):
-            if register_user(nu, npw):
-                st.success("Account created – log in above")
+            ok = register_user(nu, npw)          # ← this line actually writes CSV
+            if ok:
+                st.success("Account created")    # user + pass now saved
             else:
-                st.warning("Username already exists")
+                st.warning("User exists")
+
     st.stop()
 
 # ──────────────────────────── Main Sidebar – inputs ─────────────────────────
