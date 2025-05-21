@@ -50,12 +50,11 @@ def register_user(username:str, password:str) -> bool:
     return True
 
 def authenticate(username: str, password: str) -> bool:
-    df  = _users_df()
-    row = df[df.username == username]
-    if row.empty:
-        return False                       # user not found
-    pwd_hash = row.iloc[0]["pwd_hash"]     # ← FIXED
-    return bcrypt.verify(password, pwd_hash)
+    """Return True if a matching username/password row exists."""
+    df = _users_df()
+    return not df[(df.username == username) &
+                  (df.password == password)].empty
+
 
 
 # ─────────────────────────── Profile persistence ────────────────────────────
@@ -187,14 +186,14 @@ if not S["logged_in"]:
                 st.error("Incorrect username/password")
 
     with tab_reg:
-        nu = st.text_input("Choose username")
+        nu  = st.text_input("Choose username")
         npw = st.text_input("Choose password", type="password")
         if st.button("Create account"):
+            ok = register_user(nu, npw)      # ← create the user right here
             if ok:
-                st.success("Account created")
+                st.success("Account created")      # happy path
             else:
-                st.warning("User exists")
-
+                st.warning("User exists")  
     st.stop()
 
 # ──────────────────────────── Main Sidebar – inputs ─────────────────────────
