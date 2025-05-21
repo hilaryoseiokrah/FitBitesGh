@@ -343,3 +343,64 @@ with tab_recipe:
                 st.markdown(recipe)
                 st.download_button("⬇️ Save txt", recipe.encode(),
                                    file_name="recipe.txt", mime="text/plain")
+
+
+# ===== Profile Tab =====
+with tab_profile:
+    st.header("Profile")
+    p = st.session_state.profile
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if os.path.isfile(pic_path(st.session_state.username)):
+            st.image(pic_path(st.session_state.username), width=150)
+        up = st.file_uploader("Upload profile picture", type=["png", "jpg", "jpeg"])
+        if up:
+            open(pic_path(st.session_state.username), "wb").write(up.getbuffer())
+            st.success("Saved. Refresh.")
+    with col2:
+        st.markdown(f"""
+* **Weight:** {p['weight']} kg  
+* **Height:** {p['height']} cm  
+* **Target weight:** {p['target_weight']} kg  
+* **Age:** {p['age']}  
+* **Sex:** {p['sex'].title()}  
+* **Activity:** {p['activity'].title()}  
+* **Last updated:** {p['last_updated']}
+""")
+    st.divider()
+    st.subheader("Saved plans")
+    for w in weeks(st.session_state.username):
+        with st.expander(f"Week {w}"):
+            st.download_button("Download", open(ppath(st.session_state.username, w), "rb").read(),
+                               file_name=f"mealplan_week{w}.csv", key=f"d{w}")
+
+# ===== Recipe Tab =====
+with tab_recipe:
+    st.header("AI Recipe Maker")
+    ing = st.text_area("Ingredients (comma-separated)")
+    cui = st.text_input("Cuisine")
+    if st.button("Generate recipe"):
+        if not ing.strip() or not cui.strip():
+            st.warning("Please fill both fields.")
+        else:
+            def recipe_llm(ing, cui):
+                if not OPENAI_AVAILABLE: return None
+                sys = "You are a recipe dictionary. Only respond with recipes."
+                user = f"Ingredients: {ing}. Cuisine: {cui}."
+                try:
+                    r = client_openai.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+                        temperature=0.7,
+                        timeout=30,
+                    )
+                    return r.choices[0].message.content.strip()
+                except Exception as e:
+                    st.error(f"OpenAI error: {e}")
+                    return None
+
+            with st.spinner("GPT cooking…"):
+                r = recipe_llm(ing, cui)
+            if r:
+                st.markdown(r)
+                st.download_button("⬇️ Save txt", r.encode(), file_name="recipe.txt", mime="text/plain")
