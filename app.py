@@ -35,25 +35,27 @@ for p in (DATA, PROFILES, PICS, PLANS):
 USERS_CSV = DATA / "users.csv"
 
 # ──────────────────── Auth helpers ───────────────────────────────────
+
 def _users_df() -> pd.DataFrame:
+    """Always return a DataFrame with username & password as strings."""
     if USERS_CSV.exists():
-        return pd.read_csv(USERS_CSV)
-    return pd.DataFrame(columns=["username", "password"])
+        return pd.read_csv(USERS_CSV, dtype=str)   # ← force str
+    return pd.DataFrame(columns=["username", "password"], dtype=str)
 
 def register_user(username: str, password: str) -> bool:
     df = _users_df()
-    if username.strip() in df.username.str.strip().values:
-        return False
-    df.loc[len(df)] = [username.strip(), password]
+    uname = username.strip().lower()               # ← store lowercase
+    if uname in df.username.str.strip().str.lower().values:
+        return False                               # already exists
+    df.loc[len(df)] = [uname, password]
     df.to_csv(USERS_CSV, index=False, header=True)
     return True
 
 def authenticate(username: str, password: str) -> bool:
     df = _users_df()
-    return not df[
-        (df.username.str.strip() == username.strip()) &
-        (df.password == password)
-    ].empty
+    uname = username.strip().lower()               # ← compare lowercase
+    mask = (df.username.str.strip().str.lower() == uname) & (df.password == password)
+    return mask.any()
 
 # ───────────────── Profile helpers ──────────────────────────────────
 def profile_path(u):   return PROFILES / f"{u}.json"
