@@ -49,13 +49,9 @@ def register_user(username:str, password:str) -> bool:
     df.to_csv(USERS_CSV, index=False)
     return True
 
-def authenticate(username: str, password: str) -> bool:
-    """Return True if a matching username/password row exists."""
+def authenticate(username:str, password:str) -> bool:
     df = _users_df()
-    return not df[(df.username == username) &
-                  (df.password == password)].empty
-
-
+    return not df[(df.username==username)&(df.password==password)].empty
 
 # ─────────────────────────── Profile persistence ────────────────────────────
 def profile_path(u:str) -> Path:      return PROFILES / f"{u}.json"
@@ -186,14 +182,13 @@ if not S["logged_in"]:
                 st.error("Incorrect username/password")
 
     with tab_reg:
-        nu  = st.text_input("Choose username")
+        nu = st.text_input("Choose username")
         npw = st.text_input("Choose password", type="password")
         if st.button("Create account"):
-            ok = register_user(nu, npw)      # ← create the user right here
-            if ok:
-                st.success("Account created")      # happy path
+            if register_user(nu, npw):
+                st.success("Account created – log in above")
             else:
-                st.warning("User exists")  
+                st.warning("Username already exists")
     st.stop()
 
 # ──────────────────────────── Main Sidebar – inputs ─────────────────────────
@@ -457,7 +452,7 @@ with tab_recipe:
                 daily_portion = daily_k // 3
                 with st.spinner("Calling GPT…"):
                     try:
-                        sys = "You are a Ghanaian nutritionalist."
+                        sys = "You are a Ghanaian recipe encyclopedia."
                         prompt = (f"Give me a recipe for **{dish}** that fits about "
                                   f"{int(daily_portion)} kcal. "
                                   "Use Ghanaian household measures. Steps + kcal.")
