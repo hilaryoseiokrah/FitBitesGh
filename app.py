@@ -184,9 +184,11 @@ def gpt_plan(prefs, dislikes, kcal):
     likes = ", ".join(set(sum(prefs.values(), []))) or "any Ghanaian foods"
     dis   = ", ".join(dislikes) if dislikes else "none"
     prompt = (
-        f"You are a Ghanaian dietitian. Build a 7-day JSON table (Day, Breakfast, "
+        f"You are a Ghanaian dietitian. Build a 7-day table (Day, Breakfast, "
         f"Lunch, Dinner) using Ghanaian household measures. Daily ≈{int(kcal)} kcal "
         f"(25/35/40). LIKES: {likes}. DISLIKES: {dis}. Include kcal in parentheses."
+        f"Not in a json format."
+        f"Use proper meal combos like hausa koko and bofrot and groundnuts , rice and stews yam and stews, fufu and soups,etc ....all within the daily caloric content of the person"
     )
     try:
         r = client_openai.chat.completions.create(
