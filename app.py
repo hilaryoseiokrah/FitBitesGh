@@ -177,7 +177,7 @@ if not S["logged_in"]:
         if st.button("Login"):
             if authenticate(u, p):
                 S.update(dict(logged_in=True, username=u, profile=load_profile(u)))
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Incorrect username/password")
 
@@ -232,7 +232,7 @@ with st.sidebar:
 
     if st.button("🚪 Log out"):
         st.session_state.clear()
-        st.experimental_rerun()
+        st.rerun()
 
 # ───────────────── TV-style banner with live metrics ────────────────────────
 col1, col2, col3 = st.columns(3)
