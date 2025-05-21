@@ -204,7 +204,4 @@ col2.metric("TDEE", f"{int(tdee)} kcal/d")
 col3.metric("Time to goal", f"{int(weeks_goal)} weeks" if weeks_goal > 1 else "≈1 week")
 st.divider()
 
-# (meal-plan, profile, recipe tabs remain unchanged below …)
-# ───────────────────────────────────────────────────────────────────
-# For brevity, keep the rest of your existing implementation exactly as is.
-# All calls to st.experimental_rerun() were already replaced with st.rerun().
+
