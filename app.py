@@ -49,9 +49,14 @@ def register_user(username:str, password:str) -> bool:
     df.to_csv(USERS_CSV, index=False)
     return True
 
-def authenticate(username:str, password:str) -> bool:
-    df = _users_df()
-    return not df[(df.username==username)&(df.password==password)].empty
+def authenticate(username: str, password: str) -> bool:
+    df  = _users_df()
+    row = df[df.username == username]
+    if row.empty:
+        return False                       # user not found
+    pwd_hash = row.iloc[0]["pwd_hash"]     # ← FIXED
+    return bcrypt.verify(password, pwd_hash)
+
 
 # ─────────────────────────── Profile persistence ────────────────────────────
 def profile_path(u:str) -> Path:      return PROFILES / f"{u}.json"
@@ -185,10 +190,11 @@ if not S["logged_in"]:
         nu = st.text_input("Choose username")
         npw = st.text_input("Choose password", type="password")
         if st.button("Create account"):
-            if register_user(nu, npw):
-                st.success("Account created – log in above")
+            if ok:
+                st.success("Account created")
             else:
-                st.warning("Username already exists")
+                st.warning("User exists")
+
     st.stop()
 
 # ──────────────────────────── Main Sidebar – inputs ─────────────────────────
